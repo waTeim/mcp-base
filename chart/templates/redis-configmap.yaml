@@ -1,0 +1,12 @@
+{{- if and .Values.redis.enabled .Values.redis.master.configuration }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .Release.Name }}-redis-config
+  labels:
+    {{- include "mcp-base.labels" . | nindent 4 }}
+    app.kubernetes.io/component: redis
+data:
+  redis.conf: |
+{{ .Values.redis.master.configuration | indent 4 }}
+{{- end }}

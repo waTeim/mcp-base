@@ -1,0 +1,584 @@
+"""
+MCP Base Server - Tool Implementations
+
+This module contains all tool implementations for the mcp-base server.
+Tools are decorated with @mcp.tool() and follow the standard pattern.
+
+The mcp instance is passed in via register_tools() to avoid circular imports.
+"""
+
+import json
+import re
+from pathlib import Path
+from typing import Optional, Literal
+
+from jinja2 import Environment, FileSystemLoader, select_autoescape
+
+# ============================================================================
+# Path Configuration
+# ============================================================================
+
+BASE_DIR = Path(__file__).parent.parent
+TEMPLATES_DIR = BASE_DIR / "templates"
+PATTERNS_DIR = BASE_DIR / "patterns"
+
+# ============================================================================
+# Jinja2 Environment
+# ============================================================================
+
+jinja_env = Environment(
+    loader=FileSystemLoader(str(TEMPLATES_DIR)),
+    autoescape=select_autoescape(['html', 'xml']),
+    trim_blocks=True,
+    lstrip_blocks=True
+)
+
+# ============================================================================
+# Utility Functions
+# ============================================================================
+
+def to_snake_case(name: str) -> str:
+    """Convert name to snake_case."""
+    s = re.sub(r'[-\s]+', '_', name)
+    s = re.sub(r'([a-z])([A-Z])', r'\1_\2', s)
+    return s.lower()
+
+
+def to_kebab_case(name: str) -> str:
+    """Convert name to kebab-case."""
+    s = re.sub(r'[_\s]+', '-', name)
+    s = re.sub(r'([a-z])([A-Z])', r'\1-\2', s)
+    return s.lower()
+
+
+def to_pascal_case(name: str) -> str:
+    """Convert name to PascalCase."""
+    parts = re.split(r'[-_\s]+', name)
+    return ''.join(word.capitalize() for word in parts)
+
+
+# ============================================================================
+# Tool Implementations
+# ============================================================================
+
+async def list_templates_impl() -> str:
+    """
+    List all available templates for MCP server construction.
+
+    Returns a categorized list of templates with descriptions.
+    Use this to discover what templates are available before
+    generating server scaffolding.
+
+    Returns:
+        Formatted list of available templates by category
+    """
+    result = "# Available Templates\n\n"
+
+    # Server templates
+    result += "## Server Templates\n"
+    result += "- `server/entry_point.py.j2` - Main server entry point (HTTP transport)\n"
+    result += "- `server/auth_fastmcp.py.j2` - FastMCP Auth0 provider configuration\n"
+    result += "- `server/auth_oidc.py` - Generic OIDC provider (as-is)\n"
+    result += "- `server/mcp_context.py` - MCPContext and with_mcp_context decorator\n"
+    result += "- `server/user_hash.py` - User ID generation from JWT\n"
+    result += "- `server/tools.py.j2` - Tool implementation skeleton\n\n"
+
+    # Container templates
+    result += "## Container Templates\n"
+    result += "- `container/Dockerfile.j2` - Multi-stage Docker build\n"
+    result += "- `container/requirements.txt` - Python dependencies (as-is)\n\n"
+
+    # Helm templates
+    result += "## Helm Chart Templates\n"
+    result += "- `helm/Chart.yaml.j2` - Chart metadata with Redis dependency\n"
+    result += "- `helm/values.yaml.j2` - Default values\n"
+    result += "- `helm/templates/_helpers.tpl.j2` - Template helpers\n"
+    result += "- `helm/templates/deployment.yaml.j2` - Kubernetes deployment\n"
+    result += "- `helm/templates/service.yaml.j2` - Kubernetes service\n"
+    result += "- `helm/templates/configmap.yaml.j2` - OIDC configuration\n"
+    result += "- `helm/templates/serviceaccount.yaml.j2` - Service account\n"
+    result += "- `helm/templates/rolebinding.yaml.j2` - RBAC bindings\n"
+    result += "- `helm/templates/ingress.yaml.j2` - Ingress resource\n"
+    result += "- `helm/templates/hpa.yaml.j2` - Horizontal pod autoscaler\n\n"
+
+    # Utility templates
+    result += "## Utility Templates\n"
+    result += "- `Makefile.j2` - Build and deployment automation\n"
+    result += "- `test/test_runner.py.j2` - Test runner script\n"
+    result += "- `test/plugin_base.py` - Test plugin base class (as-is)\n"
+    result += "- `bin/create_secrets.py.j2` - Kubernetes secret creator\n"
+    result += "- `bin/setup_rbac.py.j2` - RBAC setup script\n"
+    result += "- `bin/setup_auth0.py` - Auth0 tenant setup (as-is)\n"
+
+    return result
+
+
+async def list_patterns_impl() -> str:
+    """
+    List all available pattern documentation.
+
+    Returns a list of pattern documents that explain how to
+    implement various aspects of MCP servers.
+
+    Returns:
+        Formatted list of available patterns
+    """
+    result = "# Available Patterns\n\n"
+
+    patterns = [
+        ("fastmcp-tools", "FastMCP tool implementation with MCPContext"),
+        ("authentication", "Auth0/OIDC authentication setup"),
+        ("kubernetes-integration", "Kubernetes API client patterns"),
+        ("helm-chart", "Helm chart creation from helm create"),
+        ("testing", "Plugin-based test framework"),
+        ("deployment", "Production Kubernetes deployment"),
+    ]
+
+    for name, description in patterns:
+        result += f"- `{name}` - {description}\n"
+
+    result += "\nUse `get_pattern(name)` to retrieve full documentation."
+
+    return result
+
+
+async def get_pattern_impl(name: str) -> str:
+    """
+    Get pattern documentation by name.
+
+    Retrieves detailed documentation about implementation patterns
+    for MCP servers.
+
+    Args:
+        name: Pattern name (e.g., "fastmcp-tools", "authentication")
+
+    Returns:
+        Full pattern documentation in Markdown format
+    """
+    valid_patterns = [
+        "fastmcp-tools",
+        "authentication",
+        "kubernetes-integration",
+        "helm-chart",
+        "testing",
+        "deployment"
+    ]
+
+    if name not in valid_patterns:
+        return f"Error: Unknown pattern '{name}'. Valid patterns: {', '.join(valid_patterns)}"
+
+    pattern_path = PATTERNS_DIR / f"{name}.md"
+    if not pattern_path.exists():
+        return f"Error: Pattern file not found: {pattern_path}"
+
+    return pattern_path.read_text()
+
+
+async def render_template_impl(
+    template_path: str,
+    server_name: str,
+    port: int = 8000,
+    default_namespace: str = "default",
+    chart_name: Optional[str] = None,
+    operator_cluster_roles: Optional[str] = None,
+    rbac_rules: Optional[str] = None
+) -> str:
+    """
+    Render a single template with the given parameters.
+
+    Use this to generate individual files from templates.
+    For complete project generation, use generate_server_scaffold instead.
+
+    Args:
+        template_path: Path to template (e.g., "server/entry_point.py.j2")
+        server_name: Human-readable server name (e.g., "CloudNativePG MCP")
+        port: HTTP server port (default: 8000)
+        default_namespace: Default Kubernetes namespace (default: "default")
+        chart_name: Helm chart name (defaults to kebab-case of server_name)
+        operator_cluster_roles: Comma-separated list of ClusterRoles to bind
+        rbac_rules: JSON array of RBAC rules (for setup_rbac.py.j2)
+
+    Returns:
+        Rendered template content
+    """
+    # Derive names
+    server_name_snake = to_snake_case(server_name)
+    server_name_kebab = to_kebab_case(server_name)
+    server_name_pascal = to_pascal_case(server_name)
+
+    if chart_name is None:
+        chart_name = server_name_kebab
+
+    # Parse operator cluster roles
+    cluster_roles = []
+    if operator_cluster_roles:
+        cluster_roles = [r.strip() for r in operator_cluster_roles.split(",")]
+
+    # Parse RBAC rules
+    rbac = []
+    if rbac_rules:
+        try:
+            rbac = json.loads(rbac_rules)
+        except json.JSONDecodeError as e:
+            return f"Error parsing rbac_rules JSON: {e}"
+
+    # Template variables
+    variables = {
+        "server_name": server_name,
+        "server_name_snake": server_name_snake,
+        "server_name_kebab": server_name_kebab,
+        "server_name_pascal": server_name_pascal,
+        "port": port,
+        "default_namespace": default_namespace,
+        "chart_name": chart_name,
+        "operator_cluster_roles": cluster_roles,
+        "rbac_rules": rbac,
+        "verify_permission_resource": None,
+    }
+
+    try:
+        template = jinja_env.get_template(template_path)
+        return template.render(**variables)
+    except Exception as e:
+        return f"Error rendering template: {e}"
+
+
+async def generate_server_scaffold_impl(
+    server_name: str,
+    output_description: Literal["full", "summary"] = "summary",
+    port: int = 8000,
+    default_namespace: str = "default",
+    operator_cluster_roles: Optional[str] = None,
+    include_helm: bool = True,
+    include_test: bool = True,
+    include_bin: bool = True
+) -> str:
+    """
+    Generate complete MCP server project scaffold.
+
+    Creates a full project structure with all necessary files for
+    a production-ready Kubernetes MCP server.
+
+    Args:
+        server_name: Human-readable server name (e.g., "CloudNativePG MCP")
+        output_description: "full" for all file contents, "summary" for file list only
+        port: HTTP server port (default: 8000)
+        default_namespace: Default Kubernetes namespace
+        operator_cluster_roles: Comma-separated ClusterRoles to bind (e.g., "cnpg-edit,strimzi-edit")
+        include_helm: Include Helm chart (default: True)
+        include_test: Include test framework (default: True)
+        include_bin: Include utility scripts (default: True)
+
+    Returns:
+        Generated project structure and file contents (or summary)
+
+    Examples:
+        - Basic: generate_server_scaffold(server_name="My MCP Server")
+        - With roles: generate_server_scaffold(server_name="CNPG MCP", operator_cluster_roles="cnpg-edit")
+    """
+    # Derive names
+    server_name_snake = to_snake_case(server_name)
+    server_name_kebab = to_kebab_case(server_name)
+    server_name_pascal = to_pascal_case(server_name)
+    chart_name = server_name_kebab
+
+    # Parse operator cluster roles
+    cluster_roles = []
+    if operator_cluster_roles:
+        cluster_roles = [r.strip() for r in operator_cluster_roles.split(",")]
+
+    # Template variables
+    variables = {
+        "server_name": server_name,
+        "server_name_snake": server_name_snake,
+        "server_name_kebab": server_name_kebab,
+        "server_name_pascal": server_name_pascal,
+        "port": port,
+        "default_namespace": default_namespace,
+        "chart_name": chart_name,
+        "operator_cluster_roles": cluster_roles,
+        "rbac_rules": [],
+        "verify_permission_resource": None,
+    }
+
+    # Files to generate
+    files = {}
+
+    # Server files - note the separated tools file pattern
+    server_templates = [
+        ("server/entry_point.py.j2", f"src/{server_name_snake}_server.py"),
+        ("server/test_server.py.j2", f"src/{server_name_snake}_test_server.py"),
+        ("server/auth_fastmcp.py.j2", "src/auth_fastmcp.py"),
+        ("server/tools.py.j2", f"src/{server_name_snake}_tools.py"),
+    ]
+
+    # As-is server files
+    server_static = [
+        ("server/auth_oidc.py", "src/auth_oidc.py"),
+        ("server/mcp_context.py", "src/mcp_context.py"),
+        ("server/user_hash.py", "src/user_hash.py"),
+    ]
+
+    # Container files
+    container_templates = [
+        ("container/Dockerfile.j2", "Dockerfile"),
+    ]
+
+    container_static = [
+        ("container/requirements.txt", "requirements.txt"),
+    ]
+
+    # Makefile
+    makefile = [
+        ("Makefile.j2", "Makefile"),
+    ]
+
+    # Process template files
+    for template_path, output_path in server_templates + container_templates + makefile:
+        try:
+            template = jinja_env.get_template(template_path)
+            files[output_path] = template.render(**variables)
+        except Exception as e:
+            files[output_path] = f"# Error rendering: {e}"
+
+    # Process static files
+    for template_path, output_path in server_static + container_static:
+        static_path = TEMPLATES_DIR / template_path
+        if static_path.exists():
+            files[output_path] = static_path.read_text()
+
+    # Helm chart
+    if include_helm:
+        helm_templates = [
+            ("helm/Chart.yaml.j2", "chart/Chart.yaml"),
+            ("helm/values.yaml.j2", "chart/values.yaml"),
+            ("helm/templates/_helpers.tpl.j2", "chart/templates/_helpers.tpl"),
+            ("helm/templates/deployment.yaml.j2", "chart/templates/deployment.yaml"),
+            ("helm/templates/service.yaml.j2", "chart/templates/service.yaml"),
+            ("helm/templates/configmap.yaml.j2", "chart/templates/configmap.yaml"),
+            ("helm/templates/serviceaccount.yaml.j2", "chart/templates/serviceaccount.yaml"),
+            ("helm/templates/rolebinding.yaml.j2", "chart/templates/rolebinding.yaml"),
+            ("helm/templates/ingress.yaml.j2", "chart/templates/ingress.yaml"),
+            ("helm/templates/hpa.yaml.j2", "chart/templates/hpa.yaml"),
+        ]
+
+        for template_path, output_path in helm_templates:
+            try:
+                template = jinja_env.get_template(template_path)
+                files[output_path] = template.render(**variables)
+            except Exception as e:
+                files[output_path] = f"# Error rendering: {e}"
+
+        files["chart/.helmignore"] = """# Patterns to ignore when building packages.
+*.tgz
+.git/
+.gitignore
+.DS_Store
+"""
+
+        files["chart/templates/NOTES.txt"] = f"""{{{{- $fullName := include "{chart_name}.fullname" . -}}}}
+1. Get the application URL by running these commands:
+{{{{- if .Values.ingress.enabled }}}}
+  http{{{{- if .Values.ingress.tls.enabled }}}}s{{{{- end }}}}://{{{{ .Values.ingress.host }}}}
+{{{{- else if contains "NodePort" .Values.service.type }}}}
+  export NODE_PORT=$(kubectl get --namespace {{{{ .Release.Namespace }}}} -o jsonpath="{{{{.spec.ports[0].nodePort}}}}" services {{{{ $fullName }}}})
+  export NODE_IP=$(kubectl get nodes --namespace {{{{ .Release.Namespace }}}} -o jsonpath="{{{{.items[0].status.addresses[0].address}}}}")
+  echo http://$NODE_IP:$NODE_PORT
+{{{{- else if contains "ClusterIP" .Values.service.type }}}}
+  kubectl --namespace {{{{ .Release.Namespace }}}} port-forward svc/{{{{ $fullName }}}} {port}:{port}
+  echo "Visit http://127.0.0.1:{port}/mcp"
+{{{{- end }}}}
+"""
+
+    # Test framework
+    if include_test:
+        test_templates = [
+            ("test/test_runner.py.j2", "test/test-mcp.py"),
+        ]
+
+        test_static = [
+            ("test/plugin_base.py", "test/plugins/__init__.py"),
+            ("test/get_user_token.py", "test/get-user-token.py"),
+            ("test/auth_proxy.py", "test/mcp-auth-proxy.py"),
+        ]
+
+        for template_path, output_path in test_templates:
+            try:
+                template = jinja_env.get_template(template_path)
+                files[output_path] = template.render(**variables)
+            except Exception as e:
+                files[output_path] = f"# Error rendering: {e}"
+
+        for template_path, output_path in test_static:
+            static_path = TEMPLATES_DIR / template_path
+            if static_path.exists():
+                files[output_path] = static_path.read_text()
+
+        # Example test plugin
+        files["test/plugins/test_example.py"] = f'''"""
+Example test plugin for {server_name}.
+
+Copy this file and modify for your own tools.
+"""
+from plugins import TestPlugin, TestResult
+import time
+
+
+class TestExampleTool(TestPlugin):
+    """Example test for a tool."""
+
+    tool_name = "example_tool"
+    description = "Tests the example tool"
+    depends_on = []
+    run_after = []
+
+    async def test(self, session) -> TestResult:
+        start_time = time.time()
+
+        try:
+            # Call your tool here
+            # result = await session.call_tool("your_tool", arguments={{}})
+
+            return TestResult(
+                plugin_name=self.get_name(),
+                tool_name=self.tool_name,
+                passed=True,
+                message="Example test passed (implement your test here)",
+                duration_ms=(time.time() - start_time) * 1000
+            )
+
+        except Exception as e:
+            return TestResult(
+                plugin_name=self.get_name(),
+                tool_name=self.tool_name,
+                passed=False,
+                message="Test failed",
+                error=str(e),
+                duration_ms=(time.time() - start_time) * 1000
+            )
+'''
+
+    # Utility scripts
+    if include_bin:
+        bin_templates = [
+            ("bin/create_secrets.py.j2", "bin/create-secrets.py"),
+            ("bin/setup_rbac.py.j2", "bin/setup-rbac.py"),
+        ]
+
+        bin_static = [
+            ("bin/setup_auth0.py", "bin/setup-auth0.py"),
+        ]
+
+        for template_path, output_path in bin_templates:
+            try:
+                template = jinja_env.get_template(template_path)
+                files[output_path] = template.render(**variables)
+            except Exception as e:
+                files[output_path] = f"# Error rendering: {e}"
+
+        for template_path, output_path in bin_static:
+            static_path = TEMPLATES_DIR / template_path
+            if static_path.exists():
+                files[output_path] = static_path.read_text()
+
+    # Generate output
+    if output_description == "summary":
+        result = f"# Generated Project: {server_name}\n\n"
+        result += f"## Project Structure\n\n"
+        result += "```\n"
+        for path in sorted(files.keys()):
+            result += f"{path}\n"
+        result += "```\n\n"
+        result += f"## Quick Start\n\n"
+        result += "1. Copy the generated files to your project directory\n"
+        result += f"2. Implement your tools in `src/{server_name_snake}_tools.py`\n"
+        result += "3. Run `pip install -r requirements.txt`\n"
+        result += f"4. Test locally: `python src/{server_name_snake}_server.py --port {port}`\n"
+        result += "5. Build container: `make build`\n"
+        result += "6. Deploy: `make helm-install`\n\n"
+        result += "Use `generate_server_scaffold` with `output_description=\"full\"` to see all file contents."
+        return result
+
+    else:  # full output
+        result = f"# Generated Project: {server_name}\n\n"
+        for path in sorted(files.keys()):
+            result += f"## {path}\n\n"
+            result += "```\n"
+            result += files[path]
+            result += "\n```\n\n"
+        return result
+
+
+# ============================================================================
+# Tool Registration
+# ============================================================================
+
+def register_tools(mcp):
+    """
+    Register all tools with the MCP server instance.
+
+    This function is called from the main server entry point to register
+    all tool implementations with the FastMCP instance.
+
+    Args:
+        mcp: FastMCP server instance
+    """
+
+    @mcp.tool(name="list_templates")
+    async def list_templates() -> str:
+        """List all available templates for MCP server construction."""
+        return await list_templates_impl()
+
+    @mcp.tool(name="list_patterns")
+    async def list_patterns() -> str:
+        """List all available pattern documentation."""
+        return await list_patterns_impl()
+
+    @mcp.tool(name="get_pattern")
+    async def get_pattern(name: str) -> str:
+        """Get pattern documentation by name."""
+        return await get_pattern_impl(name)
+
+    @mcp.tool(name="render_template")
+    async def render_template(
+        template_path: str,
+        server_name: str,
+        port: int = 8000,
+        default_namespace: str = "default",
+        chart_name: Optional[str] = None,
+        operator_cluster_roles: Optional[str] = None,
+        rbac_rules: Optional[str] = None
+    ) -> str:
+        """Render a single template with the given parameters."""
+        return await render_template_impl(
+            template_path=template_path,
+            server_name=server_name,
+            port=port,
+            default_namespace=default_namespace,
+            chart_name=chart_name,
+            operator_cluster_roles=operator_cluster_roles,
+            rbac_rules=rbac_rules
+        )
+
+    @mcp.tool(name="generate_server_scaffold")
+    async def generate_server_scaffold(
+        server_name: str,
+        output_description: Literal["full", "summary"] = "summary",
+        port: int = 8000,
+        default_namespace: str = "default",
+        operator_cluster_roles: Optional[str] = None,
+        include_helm: bool = True,
+        include_test: bool = True,
+        include_bin: bool = True
+    ) -> str:
+        """Generate complete MCP server project scaffold."""
+        return await generate_server_scaffold_impl(
+            server_name=server_name,
+            output_description=output_description,
+            port=port,
+            default_namespace=default_namespace,
+            operator_cluster_roles=operator_cluster_roles,
+            include_helm=include_helm,
+            include_test=include_test,
+            include_bin=include_bin
+        )

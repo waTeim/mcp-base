@@ -1,0 +1,156 @@
+# Makefile for {{ server_name }} MCP Server
+# Builds and pushes container images
+
+# Default target
+.PHONY: all
+all: build
+
+# Include configuration (create make.env to override)
+-include make.env
+
+# Default values (overridden by make.env)
+REGISTRY ?= your-registry.example.com
+IMAGE_NAME ?= {{ server_name_snake }}-server
+TAG ?= latest
+PLATFORM ?= linux/amd64
+CONTAINER_TOOL ?= docker
+HELM_RELEASE ?= {{ chart_name }}
+HELM_NAMESPACE ?= default
+
+# Derived values
+IMAGE_FULL := $(REGISTRY)/$(IMAGE_NAME):$(TAG)
+
+#
+# Container build targets
+#
+
+.PHONY: build
+build: ## Build container image
+	@echo "Building container image: $(IMAGE_FULL)"
+	$(CONTAINER_TOOL) build --tag $(IMAGE_FULL) --platform $(PLATFORM) --file Dockerfile .
+	@echo "✓ Built: $(IMAGE_FULL)"
+
+.PHONY: build-no-cache
+build-no-cache: ## Build container image without cache
+	@echo "Building container image (no cache): $(IMAGE_FULL)"
+	$(CONTAINER_TOOL) build \
+		--no-cache \
+		--tag $(IMAGE_FULL) \
+		--platform $(PLATFORM) \
+		--file Dockerfile \
+		.
+	@echo "✓ Built: $(IMAGE_FULL)"
+
+.PHONY: push
+push: ## Push container image to registry
+	@echo "Pushing container image: $(IMAGE_FULL)"
+	$(CONTAINER_TOOL) push $(IMAGE_FULL)
+	@echo "✓ Pushed: $(IMAGE_FULL)"
+
+.PHONY: build-push
+build-push: build push ## Build and push container image
+
+#
+# Helm chart targets
+#
+
+.PHONY: helm-lint
+helm-lint: ## Lint Helm chart
+	@echo "Linting Helm chart..."
+	helm lint chart/
+
+.PHONY: helm-template
+helm-template: ## Render Helm chart templates
+	@echo "Rendering Helm chart templates..."
+	helm template $(HELM_RELEASE) chart/ \
+		--namespace $(HELM_NAMESPACE) \
+		--set image.repository=$(REGISTRY)/$(IMAGE_NAME) \
+		--set image.tag=$(TAG)
+
+.PHONY: helm-deps
+helm-deps: ## Update Helm chart dependencies
+	@echo "Updating Helm chart dependencies..."
+	helm dependency update chart/
+
+.PHONY: helm-install
+helm-install: ## Install Helm chart
+	@echo "Installing Helm chart: $(HELM_RELEASE)"
+	helm upgrade --install $(HELM_RELEASE) chart/ \
+		--namespace $(HELM_NAMESPACE) \
+		--create-namespace \
+		--set image.repository=$(REGISTRY)/$(IMAGE_NAME) \
+		--set image.tag=$(TAG) \
+		--wait
+	@echo "✓ Installed: $(HELM_RELEASE) in namespace $(HELM_NAMESPACE)"
+
+.PHONY: helm-upgrade
+helm-upgrade: ## Upgrade Helm release
+	@echo "Upgrading Helm release: $(HELM_RELEASE)"
+	helm upgrade $(HELM_RELEASE) chart/ \
+		--namespace $(HELM_NAMESPACE) \
+		--set image.repository=$(REGISTRY)/$(IMAGE_NAME) \
+		--set image.tag=$(TAG) \
+		--wait
+	@echo "✓ Upgraded: $(HELM_RELEASE)"
+
+.PHONY: helm-uninstall
+helm-uninstall: ## Uninstall Helm release
+	@echo "Uninstalling Helm release: $(HELM_RELEASE)"
+	helm uninstall $(HELM_RELEASE) --namespace $(HELM_NAMESPACE)
+	@echo "✓ Uninstalled: $(HELM_RELEASE)"
+
+.PHONY: helm-status
+helm-status: ## Show Helm release status
+	helm status $(HELM_RELEASE) --namespace $(HELM_NAMESPACE)
+
+#
+# Development targets
+#
+
+.PHONY: dev-run
+dev-run: ## Run server locally
+	@echo "Starting server..."
+	python src/{{ server_name_snake }}_server.py --port {{ port }}
+
+#
+# Kubernetes targets
+#
+
+.PHONY: k8s-logs
+k8s-logs: ## Show logs from deployed pods
+	@echo "Logs from $(HELM_RELEASE):"
+	kubectl logs -n $(HELM_NAMESPACE) -l app.kubernetes.io/name={{ chart_name }} --tail=100 -f
+
+.PHONY: k8s-pods
+k8s-pods: ## Show deployed pods
+	kubectl get pods -n $(HELM_NAMESPACE) -l app.kubernetes.io/name={{ chart_name }}
+
+.PHONY: k8s-port-forward
+k8s-port-forward: ## Port forward to deployed service
+	@echo "Port forwarding to $(HELM_RELEASE) service..."
+	@echo "Access at: http://localhost:{{ port }}"
+	kubectl port-forward -n $(HELM_NAMESPACE) svc/$(HELM_RELEASE)-{{ chart_name }} {{ port }}:{{ port }}
+
+#
+# Utility targets
+#
+
+.PHONY: clean
+clean: ## Clean generated files
+	@echo "Cleaning generated files..."
+	rm -f make.env
+	@echo "✓ Cleaned"
+
+.PHONY: help
+help: ## Show this help message
+	@echo "{{ server_name }} MCP Server - Makefile"
+	@echo ""
+	@echo "Usage: make [target]"
+	@echo ""
+	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-20s\033[0m %s\n", $$1, $$2}'
+	@echo ""
+	@echo "Quick Start:"
+	@echo "  1. make build           # Build container image"
+	@echo "  2. make push            # Push to registry"
+	@echo "  3. make helm-deps       # Update chart dependencies"
+	@echo "  4. make helm-install    # Deploy to Kubernetes"

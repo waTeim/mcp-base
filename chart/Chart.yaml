@@ -1,0 +1,28 @@
+apiVersion: v2
+name: mcp-base
+description: MCP Base - A foundation for building Model Context Protocol servers
+
+# Application chart
+type: application
+
+# Chart version - increment with each change
+version: 0.1.0
+
+# Application version
+appVersion: "0.1.0"
+
+# Keywords for search
+keywords:
+  - mcp
+  - model-context-protocol
+  - fastmcp
+  - oauth
+  - oidc
+
+# Maintainers
+maintainers:
+  - name: MCP Base Team
+
+# Dependencies
+# Redis is included as a subchart for OAuth session persistence
+# No external dependencies - Redis templates are included directly

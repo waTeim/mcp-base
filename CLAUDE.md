@@ -4,163 +4,196 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-**mcp-base** is an MCP server that assists AI agents in constructing production-ready, Kubernetes-Python-centric remote MCP servers. It provides resources, prompts, and tools to scaffold and generate MCP servers following established patterns.
+**mcp-base** is an MCP server that assists AI agents in constructing production-ready, Kubernetes-Python-centric remote MCP servers. It exposes templates, patterns, and tools via the MCP protocol.
 
-**Key components**:
-- `prompts/`: Construction prompts for guiding MCP server generation
-- `example/cnpg-mcp/`: Complete reference implementation (CloudNativePG MCP server)
+**Key characteristics:**
+- HTTP-only transport (Streamable HTTP via FastMCP)
+- Jinja2 templates for parameterized code generation
+- Pattern documentation for implementation guidance
+- Tools for scaffolding complete MCP server projects
 
-## Reference Implementation Features
+## Project Structure
 
-The `example/cnpg-mcp/` directory demonstrates all patterns that mcp-base helps construct:
+```
+mcp-base/
+├── src/
+│   └── mcp_base_server.py     # Main MCP server
+├── templates/                  # Jinja2 templates
+│   ├── server/                # Server code templates
+│   ├── container/             # Dockerfile, requirements
+│   ├── helm/                  # Helm chart templates
+│   ├── test/                  # Test framework templates
+│   └── bin/                   # Utility script templates
+├── patterns/                   # Pattern documentation
+│   ├── fastmcp-tools.md       # Tool implementation patterns
+│   ├── authentication.md      # Auth0/OIDC patterns
+│   ├── kubernetes-integration.md
+│   ├── helm-chart.md
+│   ├── testing.md
+│   └── deployment.md
+├── example/cnpg-mcp/          # Reference implementation
+├── prompts/                   # Construction prompts
+├── Dockerfile                 # Container build
+└── requirements.txt           # Python dependencies
+```
 
-### Server Architecture
-- **FastMCP** framework with automatic schema generation from docstrings
-- **Transport-agnostic design**: stdio (Claude Desktop) and HTTP/SSE (production)
-- **Async operations**: All I/O via `asyncio.to_thread()`
-- **Lazy Kubernetes client initialization**
-
-### Authentication (OIDC/OAuth2)
-- **FastMCP Auth0Provider** for OAuth proxy token issuance
-- **YAML config file** support (`/etc/mcp/oidc.yaml`)
-- **JWT signing key** management (file or environment variable)
-- **Redis session persistence** with Fernet encryption
-- **User identification** from JWT claims (RFC 1123 compatible IDs)
-
-### Kubernetes Integration
-- **kubernetes-python client** with CRD support
-- **RBAC** using operator-provided ClusterRoles
-- **Secret management** for credentials and passwords
-- **Namespace inference** from kubeconfig context
-
-### Deployment
-- **Helm chart** with Redis dependency
-- **ConfigMap** for OIDC configuration
-- **Secrets** for Auth0 credentials and JWT signing key
-- **Health probes**: `/healthz`, `/readyz`
-- **Optional test sidecar** for dual authentication modes
-
-### Testing
-- **Plugin-based test system** with dependency ordering
-- **Topological sort** for test execution order
-- **JUnit XML output** for CI/CD integration
-- **Auth proxy** for simplified HTTP testing
-
-## Development Environment
-
-### Devcontainer
-- Python 3.12, Go 1.24, Node.js LTS
-- kubectl (v1.30), helm, kubelogin
-- Claude Code CLI, MCP Inspector
-
-### Common Commands
+## Running the Server
 
 ```bash
 # Install dependencies
 pip install -r requirements.txt
 
-# Run example server (stdio)
-python example/cnpg-mcp/src/cnpg_mcp_server.py
+# Run server (HTTP transport)
+python src/mcp_base_server.py --port 8000
 
-# Run example server (HTTP with OIDC)
-export OIDC_ISSUER=https://your-tenant.auth0.com
-export OIDC_AUDIENCE=https://your-api/mcp
-python example/cnpg-mcp/src/cnpg_mcp_server.py --transport http --port 3000
-
-# Run tests
-python example/cnpg-mcp/test/test-mcp.py
-
-# Build container
-cd example/cnpg-mcp && make build
-
-# Deploy via Helm
-cd example/cnpg-mcp && make helm-install
+# Build and run container
+docker build -t mcp-base .
+docker run -p 8000:8000 mcp-base
 ```
 
-## Key Patterns to Extract
+## MCP Resources
 
-### Tool Implementation Pattern
+The server exposes these resources:
+
+### Template Resources (`template://`)
+- `template://server/entry_point.py` - Main server entry point
+- `template://server/auth_fastmcp.py` - FastMCP Auth0 provider
+- `template://server/auth_oidc.py` - Generic OIDC provider
+- `template://server/mcp_context.py` - MCPContext and with_mcp_context
+- `template://server/user_hash.py` - User ID generation
+- `template://server/tools.py` - Tool implementation skeleton
+- `template://container/Dockerfile` - Container build
+- `template://container/requirements.txt` - Python dependencies
+- `template://helm/Chart.yaml` - Helm chart metadata
+- `template://helm/values.yaml` - Default values
+- `template://Makefile` - Build automation
+
+### Pattern Resources (`pattern://`)
+- `pattern://fastmcp-tools` - FastMCP tool implementation
+- `pattern://authentication` - Auth0/OIDC setup
+- `pattern://kubernetes-integration` - K8s client patterns
+- `pattern://helm-chart` - Helm chart creation
+- `pattern://testing` - Test framework patterns
+- `pattern://deployment` - Production deployment
+
+## MCP Tools
+
+### `list_templates`
+Lists all available templates with descriptions.
+
+### `list_patterns`
+Lists all available pattern documentation.
+
+### `get_pattern(name)`
+Retrieves full pattern documentation by name.
+
+### `render_template(template_path, server_name, ...)`
+Renders a single template with parameters:
+- `template_path`: Path to template (e.g., "server/entry_point.py.j2")
+- `server_name`: Human-readable server name
+- `port`: HTTP port (default: 8000)
+- `default_namespace`: K8s namespace (default: "default")
+- `chart_name`: Helm chart name (defaults from server_name)
+- `operator_cluster_roles`: Comma-separated ClusterRoles to bind
+
+### `generate_server_scaffold(server_name, ...)`
+Generates complete MCP server project:
+- `server_name`: Human-readable server name
+- `output_description`: "full" or "summary"
+- `port`: HTTP port
+- `default_namespace`: Default K8s namespace
+- `operator_cluster_roles`: ClusterRoles to bind
+- `include_helm`: Include Helm chart (default: true)
+- `include_test`: Include test framework (default: true)
+- `include_bin`: Include utility scripts (default: true)
+
+## Template Variables
+
+Templates use these Jinja2 variables:
+- `{{ server_name }}` - Human-readable name
+- `{{ server_name_snake }}` - snake_case version
+- `{{ server_name_kebab }}` - kebab-case version
+- `{{ server_name_pascal }}` - PascalCase version
+- `{{ port }}` - HTTP port number
+- `{{ default_namespace }}` - Default K8s namespace
+- `{{ chart_name }}` - Helm chart name
+- `{{ operator_cluster_roles }}` - List of ClusterRoles
+
+## Usage Example
+
+When an AI agent wants to create a new MCP server:
+
 ```python
-@mcp.tool(name="tool_name")
-async def tool_wrapper(param1: str, ctx: Context = None):
-    """Brief description."""
-    return await tool_impl(ctx, param1=param1)
+# 1. List available templates
+result = await mcp.call_tool("list_templates")
 
-async def tool_impl(context: MCPContext, param1: str, ...) -> str:
-    """
-    Brief description.
+# 2. Get pattern documentation
+pattern = await mcp.call_tool("get_pattern", {"name": "fastmcp-tools"})
 
-    Args:
-        param1: Description with examples
+# 3. Generate complete project
+scaffold = await mcp.call_tool("generate_server_scaffold", {
+    "server_name": "CloudNativePG MCP",
+    "port": 8000,
+    "operator_cluster_roles": "cnpg-cloudnative-pg-edit"
+})
 
-    Returns:
-        Description of format
-
-    Examples:
-        - tool_impl(param1="value")
-
-    Error Handling:
-        - 404: Resource not found
-        - 403: Permission denied
-    """
-    try:
-        # Async Kubernetes call
-        result = await asyncio.to_thread(api.method, ...)
-        return truncate_response(format_result(result))
-    except Exception as e:
-        return format_error_message(e, "context")
+# 4. Or render individual template
+template = await mcp.call_tool("render_template", {
+    "template_path": "server/entry_point.py.j2",
+    "server_name": "My MCP Server"
+})
 ```
 
-### Configuration Priority
-1. Config file (`/etc/mcp/oidc.yaml`)
-2. Environment variables
-3. Defaults
+## Key Patterns from Reference Implementation
 
-### Secret Mounting Pattern
-- Auth0 credentials: `/etc/mcp/secrets/auth0/`
-- JWT signing key: `/etc/mcp/secrets/jwt-signing-key`
-- Storage encryption key: `/etc/mcp/secrets/storage-encryption-key`
+### Tool Implementation
+```python
+@mcp.tool(name="my_tool")
+@with_mcp_context
+async def my_tool(ctx: MCPContext, param: str) -> str:
+    """Tool description for LLM consumption."""
+    user = ctx.preferred_username or ctx.user_id
+    await ctx.info(f"User {user} calling my_tool")
 
-## File Organization
-
-### Core Prompt
-- `prompts/construct-mcp-server.md`: Comprehensive guide for building MCP servers
-
-### Reference Implementation (`example/cnpg-mcp/`)
-```
-src/
-  cnpg_mcp_server.py     # Main entry point
-  cnpg_tools.py          # Tool implementations
-  auth_fastmcp.py        # Auth0 OAuth proxy
-  user_hash.py           # User identification
-test/
-  test-mcp.py            # Test runner
-  plugins/               # Test plugins
-bin/
-  create_secrets.py      # K8s secret generator
-  setup_rbac.py          # RBAC setup
-chart/
-  Chart.yaml             # Helm chart
-  values.yaml            # Configuration
-  templates/             # K8s manifests
+    result = await asyncio.to_thread(k8s_api.method, ...)
+    return truncate_response(format_result(result))
 ```
 
-## Construction Workflow
+### Authentication Flow
+1. FastMCP Auth0Provider handles OAuth
+2. Redis stores session tokens (encrypted with Fernet)
+3. MCPContext extracts user info from JWT
+4. with_mcp_context decorator wraps tools
 
-When using mcp-base to construct a new MCP server:
+### Helm Chart Structure
+- Created via `helm create` then modified
+- Redis dependency for session storage
+- ConfigMap for OIDC config
+- Secrets for Auth0 credentials
+- RoleBinding to operator ClusterRoles
 
-1. **Define target API**: Identify CRD group/version/plural, operations, RBAC needs
-2. **Use construction prompt**: `prompts/construct-mcp-server.md`
-3. **Follow reference patterns**: Copy and adapt from `example/cnpg-mcp/`
-4. **Implement tools**: Start with list/get, then create/update/delete
-5. **Set up authentication**: Configure Auth0 or OIDC provider
-6. **Create Helm chart**: Adapt from reference chart
-7. **Write tests**: Create plugins for each tool
-8. **Document**: README, OIDC setup, troubleshooting
+## Development
+
+### Adding Templates
+1. Create `.j2` file in `templates/`
+2. Add resource function in `mcp_base_server.py`
+3. Include in `generate_server_scaffold` if needed
+
+### Adding Patterns
+1. Create `.md` file in `patterns/`
+2. Add resource function in `mcp_base_server.py`
+3. Update `list_patterns` tool
+
+## Reference Implementation
+
+The `example/cnpg-mcp/` directory contains a complete working MCP server for CloudNativePG management. Use it as a reference for:
+- Tool implementation structure
+- Authentication setup
+- Helm chart organization
+- Test framework usage
 
 ## Resources
 
 - [MCP Protocol Specification](https://modelcontextprotocol.io/)
 - [FastMCP Documentation](https://github.com/jlowin/fastmcp)
 - [Kubernetes Python Client](https://github.com/kubernetes-client/python)
-- [CloudNativePG Documentation](https://cloudnative-pg.io/documentation/current/)

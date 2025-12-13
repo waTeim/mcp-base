@@ -1,0 +1,197 @@
+"""
+{{ server_name }} MCP Server - Tool Implementations
+
+This module contains the MCP tool implementations for {{ server_name }}.
+Tool implementations are separated from registration for testability.
+
+Pattern:
+1. _impl functions contain the actual logic
+2. register_tools() decorates and registers them with FastMCP
+3. with_mcp_context provides user context from JWT
+"""
+
+from typing import Optional, Literal
+
+from mcp_context import MCPContext, with_mcp_context
+
+# ============================================================================
+# Constants
+# ============================================================================
+
+CHARACTER_LIMIT = 25000  # Maximum response size for LLM context
+
+
+# ============================================================================
+# Response Formatting Utilities
+# ============================================================================
+
+def truncate_response(response: str, limit: int = CHARACTER_LIMIT) -> str:
+    """Truncate response to fit within character limit."""
+    if len(response) <= limit:
+        return response
+
+    truncation_msg = f"\n\n... [Response truncated. Showing {limit} of {len(response)} characters]"
+    return response[:limit - len(truncation_msg)] + truncation_msg
+
+
+def format_error_message(error: Exception, context: str = "") -> str:
+    """
+    Format an error message with actionable suggestions.
+
+    Args:
+        error: The exception that occurred
+        context: Additional context about what operation failed
+
+    Returns:
+        Formatted error message with suggestions
+    """
+    error_type = type(error).__name__
+    error_msg = str(error)
+
+    # Extract HTTP status code if available
+    status_code = None
+    if hasattr(error, 'status'):
+        status_code = error.status
+    elif hasattr(error, 'response') and hasattr(error.response, 'status_code'):
+        status_code = error.response.status_code
+
+    result = f"## Error: {context}\n\n"
+    result += f"**Type:** {error_type}\n"
+    result += f"**Message:** {error_msg}\n"
+
+    if status_code:
+        result += f"**Status Code:** {status_code}\n\n"
+
+        # Add suggestions based on status code
+        result += "### Suggestions:\n"
+        if status_code == 404:
+            result += "- The requested resource was not found\n"
+            result += "- Verify the resource name and namespace are correct\n"
+            result += "- Use the list tool to see available resources\n"
+        elif status_code == 403:
+            result += "- Permission denied to access this resource\n"
+            result += "- Check RBAC permissions for the service account\n"
+            result += "- Verify the namespace is accessible\n"
+        elif status_code == 409:
+            result += "- A resource with this name may already exist\n"
+            result += "- Use a different name or delete the existing resource first\n"
+        elif status_code == 422:
+            result += "- The resource specification is invalid\n"
+            result += "- Check the API documentation for required fields\n"
+        else:
+            result += "- Check the Kubernetes API server logs for more details\n"
+
+    return result
+
+
+# ============================================================================
+# Tool Implementations (_impl functions)
+# ============================================================================
+
+# Example tool implementation:
+#
+# async def list_resources_impl(
+#     ctx: MCPContext,
+#     namespace: Optional[str] = None,
+#     detail_level: Literal["concise", "detailed"] = "concise"
+# ) -> str:
+#     """
+#     List all resources in the specified namespace.
+#
+#     Args:
+#         ctx: MCP context with user information
+#         namespace: Kubernetes namespace to list from
+#         detail_level: Amount of detail to include
+#
+#     Returns:
+#         Formatted list of resources
+#     """
+#     try:
+#         # Log user context for audit trail
+#         user_info = f"User: {ctx.preferred_username or ctx.user_id or 'anonymous'}"
+#         await ctx.ctx.info(f"{user_info} listing resources in namespace={namespace or 'all'}")
+#
+#         # Implementation here...
+#         result = "## Resources\n\n"
+#         # ... build result ...
+#
+#         return truncate_response(result)
+#
+#     except Exception as e:
+#         return format_error_message(e, f"listing resources in namespace {namespace or 'all'}")
+
+
+async def example_tool_impl(ctx: MCPContext, name: str) -> str:
+    """
+    Example tool implementation.
+
+    Replace this with your actual tool implementations.
+
+    Args:
+        ctx: MCP context with user information
+        name: Example parameter
+
+    Returns:
+        Example response
+    """
+    user_info = ctx.preferred_username or ctx.user_id or 'anonymous'
+    return f"Hello {name}! (User: {user_info})"
+
+
+# ============================================================================
+# Tool Registration
+# ============================================================================
+
+def register_tools(mcp):
+    """
+    Register all tools with the MCP server instance.
+
+    This function is called from the main server entry point to register
+    all tool implementations with the FastMCP instance.
+
+    Args:
+        mcp: FastMCP server instance
+    """
+
+    @mcp.tool(name="example_tool")
+    @with_mcp_context
+    async def example_tool(ctx: MCPContext, name: str) -> str:
+        """
+        Example tool that greets the user.
+
+        This is a placeholder tool. Replace it with your actual tool implementations.
+
+        Args:
+            name: Name to greet
+
+        Returns:
+            Greeting message
+        """
+        return await example_tool_impl(ctx, name)
+
+    # Add more tools following this pattern:
+    #
+    # @mcp.tool(name="list_resources")
+    # @with_mcp_context
+    # async def list_resources(
+    #     ctx: MCPContext,
+    #     namespace: Optional[str] = None,
+    #     detail_level: Literal["concise", "detailed"] = "concise"
+    # ) -> str:
+    #     """
+    #     List all resources in the specified namespace.
+    #
+    #     This tool retrieves a list of resources managed by {{ server_name }}.
+    #     Use this to discover what resources exist before performing operations.
+    #
+    #     Args:
+    #         namespace: Kubernetes namespace to list from. If not specified,
+    #                   lists resources from all accessible namespaces.
+    #         detail_level: Amount of detail to include:
+    #                      - "concise": Name, namespace, and status only
+    #                      - "detailed": Full resource information
+    #
+    #     Returns:
+    #         Formatted list of resources with their current status.
+    #     """
+    #     return await list_resources_impl(ctx, namespace, detail_level)

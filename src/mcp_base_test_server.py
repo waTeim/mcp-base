@@ -1,0 +1,156 @@
+#!/usr/bin/env python3
+"""
+MCP Base MCP Test Server (OIDC Auth)
+
+Test endpoint for the MCP Base MCP server using standard OIDC authentication.
+This server accepts Auth0 JWT tokens directly (no MCP token issuance).
+
+This is deployed as a sidecar container alongside the main FastMCP OAuth server,
+allowing both authentication methods to coexist:
+- Main server (port 8000): FastMCP OAuth proxy issuing MCP tokens
+- Test server (port 8001): Standard OIDC accepting Auth0 JWT tokens
+
+Both servers share the same tool implementations from mcp_base_tools.py.
+"""
+
+import argparse
+import logging
+import sys
+import os
+import warnings
+
+# Suppress deprecation warnings from dependencies
+warnings.filterwarnings("ignore", category=DeprecationWarning, module="urllib3")
+warnings.filterwarnings("ignore", message=".*HTTPResponse.getheaders.*")
+
+from fastmcp import FastMCP, Context
+import uvicorn
+from starlette.routing import Route
+from starlette.responses import JSONResponse
+
+# Import shared tools registration
+from mcp_base_tools import register_tools
+
+# Import OIDC auth
+from auth_oidc import OIDCAuthProvider, OIDCAuthMiddleware
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(levelname)s:     %(message)s',
+    handlers=[logging.StreamHandler(sys.stderr)]
+)
+logger = logging.getLogger(__name__)
+
+# Set log levels for external libraries
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
+
+# ============================================================================
+# FastMCP Server Initialization
+# ============================================================================
+
+mcp = FastMCP(
+    "mcp-base-test",
+    instructions="""
+MCP Base MCP Test Server (OIDC Auth).
+
+This is the test server endpoint that accepts Auth0 JWT tokens directly.
+Use this for testing with standard OIDC authentication.
+"""
+)
+
+# ============================================================================
+# Register Tools
+# ============================================================================
+
+register_tools(mcp)
+
+logger.info("Tools registered with test MCP server")
+
+# ============================================================================
+# Health Check Endpoints
+# ============================================================================
+
+async def liveness_check(request):
+    """Kubernetes liveness probe endpoint."""
+    return JSONResponse({"status": "alive"})
+
+
+async def readiness_check(request):
+    """Kubernetes readiness probe endpoint."""
+    return JSONResponse({"status": "ready"})
+
+
+# ============================================================================
+# Main Entry Point
+# ============================================================================
+
+def main():
+    """Main entry point for the test server."""
+    parser = argparse.ArgumentParser(
+        description="MCP Base MCP Test Server (OIDC Auth)"
+    )
+    parser.add_argument(
+        "--port",
+        type=int,
+        default=int(os.getenv("TEST_PORT", "8001")),
+        help="Port to listen on (default: 8001)"
+    )
+    parser.add_argument(
+        "--host",
+        default="0.0.0.0",
+        help="Host to bind to (default: 0.0.0.0)"
+    )
+
+    args = parser.parse_args()
+
+    logger.info("=" * 70)
+    logger.info("MCP Base MCP Test Server (OIDC Auth)")
+    logger.info("=" * 70)
+    logger.info(f"Listening on: {args.host}:{args.port}")
+    logger.info(f"Endpoint: /test")
+    logger.info(f"Auth: Standard OIDC (Auth0 JWT tokens)")
+    logger.info("=" * 70)
+
+    # Create OIDC auth provider
+    logger.info("Initializing OIDC authentication...")
+    oidc_provider = OIDCAuthProvider()
+    logger.info(f"   Issuer: {oidc_provider.issuer}")
+    logger.info(f"   Audience: {oidc_provider.audience}")
+
+    # Create FastMCP HTTP app
+    app = mcp.http_app(path="/test")
+
+    # Add OIDC middleware
+    logger.info("Adding OIDC authentication middleware...")
+    app.add_middleware(
+        OIDCAuthMiddleware,
+        auth_provider=oidc_provider,
+        exclude_paths=["/healthz", "/readyz"]
+    )
+
+    # Add health check routes
+    app.add_route("/healthz", liveness_check)
+    app.add_route("/readyz", readiness_check)
+
+    logger.info("Test server ready")
+    logger.info("")
+    logger.info("To test with Auth0 JWT token:")
+    logger.info("  1. Get token: ./test/get-user-token.py")
+    logger.info("  2. Test: ./test/test-mcp.py --transport http \\")
+    logger.info(f"           --url http://localhost:{args.port}/test \\")
+    logger.info("           --token-file /tmp/user-token.txt")
+    logger.info("")
+
+    # Run server
+    uvicorn.run(
+        app,
+        host=args.host,
+        port=args.port,
+        log_level="info"
+    )
+
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,163 @@
+#!/usr/bin/env python3
+"""
+{{ server_name }} MCP Server - Entry Point
+
+MCP server using FastMCP with OAuth proxy authentication.
+HTTP transport only (Streamable HTTP).
+
+Tool implementations are in {{ server_name_snake }}_tools.py
+"""
+
+import argparse
+import logging
+import sys
+import os
+import warnings
+
+# Suppress deprecation warnings from dependencies
+warnings.filterwarnings("ignore", category=DeprecationWarning, module="urllib3")
+warnings.filterwarnings("ignore", message=".*HTTPResponse.getheaders.*")
+
+from fastmcp import FastMCP, Context
+import uvicorn
+from starlette.routing import Route
+from starlette.responses import JSONResponse
+
+# Import tool registration from tools module
+from {{ server_name_snake }}_tools import register_tools
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(levelname)s:     %(message)s',
+    handlers=[logging.StreamHandler(sys.stderr)]
+)
+logger = logging.getLogger(__name__)
+
+# Set log levels for external libraries
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
+
+# ============================================================================
+# FastMCP Server Initialization
+# ============================================================================
+
+mcp = FastMCP(
+    "{{ server_name }}",
+    instructions="""
+{{ server_name }} MCP Server.
+
+This server provides tools for managing {{ server_name_kebab }} resources
+in Kubernetes environments.
+"""
+)
+
+# ============================================================================
+# Register Tools from tools module
+# ============================================================================
+
+register_tools(mcp)
+
+logger.info("Tools registered with MCP server")
+
+# ============================================================================
+# Health Check Endpoints
+# ============================================================================
+
+async def liveness_check(request):
+    """Kubernetes liveness probe endpoint."""
+    return JSONResponse({"status": "alive"})
+
+
+async def readiness_check(request):
+    """Kubernetes readiness probe endpoint."""
+    return JSONResponse({"status": "ready"})
+
+
+# ============================================================================
+# HTTP Transport
+# ============================================================================
+
+def run_http_transport(host: str, port: int):
+    """Run server in HTTP mode with FastMCP OAuth."""
+    from auth_fastmcp import create_auth0_oauth_proxy, get_auth_config_summary, load_oidc_config_from_file
+
+    logger.info("Initializing FastMCP OAuth Proxy...")
+
+    # Load configuration
+    config = load_oidc_config_from_file() or {}
+    issuer = config.get("issuer") or os.getenv("OIDC_ISSUER") or ""
+    audience = config.get("audience") or os.getenv("OIDC_AUDIENCE") or ""
+    client_id = config.get("client_id") or os.getenv("AUTH0_CLIENT_ID") or ""
+    public_url = config.get("public_url") or os.getenv("PUBLIC_URL") or ""
+
+    # Create OAuth Proxy (handles token issuance)
+    auth_proxy = create_auth0_oauth_proxy()
+
+    # Log configuration summary
+    config_summary = get_auth_config_summary(issuer, audience, client_id, public_url)
+    logger.info("=" * 80)
+    logger.info("FastMCP OAuth Configuration:")
+    logger.info("=" * 80)
+    for key, value in config_summary.items():
+        logger.info(f"  {key}: {value}")
+    logger.info("=" * 80)
+
+    # Set OAuth on mcp instance
+    mcp.auth = auth_proxy
+
+    # Create app with OAuth at /mcp endpoint
+    app = mcp.http_app(transport="http", path="/mcp")
+
+    # Add health check routes
+    app.add_route("/healthz", liveness_check)
+    app.add_route("/readyz", readiness_check)
+
+    logger.info("")
+    logger.info("=" * 80)
+    logger.info("{{ server_name }} MCP Server")
+    logger.info("=" * 80)
+    logger.info(f"  Listening on: {host}:{port}")
+    logger.info(f"  MCP Endpoint: /mcp")
+    logger.info(f"  Auth: FastMCP OAuth Proxy")
+    logger.info(f"  OAuth Discovery: /.well-known/oauth-authorization-server")
+    logger.info(f"  Client Registration: /register")
+    logger.info("=" * 80)
+    logger.info("")
+
+    # Run server
+    uvicorn.run(
+        app,
+        host=host,
+        port=port,
+        log_level="info"
+    )
+
+
+# ============================================================================
+# Main Entry Point
+# ============================================================================
+
+def main():
+    """Main entry point."""
+    parser = argparse.ArgumentParser(
+        description="{{ server_name }} MCP Server"
+    )
+    parser.add_argument(
+        "--port",
+        type=int,
+        default=int(os.getenv("PORT", "{{ port }}")),
+        help="Port for HTTP transport (default: {{ port }})"
+    )
+    parser.add_argument(
+        "--host",
+        default="0.0.0.0",
+        help="Host for HTTP transport (default: 0.0.0.0)"
+    )
+
+    args = parser.parse_args()
+    run_http_transport(args.host, args.port)
+
+
+if __name__ == "__main__":
+    main()
