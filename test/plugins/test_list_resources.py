@@ -38,6 +38,7 @@ class TestListResources(TestPlugin):
             ]
 
             expected_pattern_resources = [
+                "pattern://architecture",
                 "pattern://fastmcp-tools",
                 "pattern://authentication",
                 "pattern://kubernetes-integration",

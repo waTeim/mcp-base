@@ -1,0 +1,249 @@
+# mcp-base
+
+An MCP server that helps AI agents build production-ready MCP servers for Kubernetes environments.
+
+## What It Does
+
+**mcp-base** exposes templates, patterns, and tools via the [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) that enable AI agents to generate complete, deployable MCP server projects. Generated servers include:
+
+- FastMCP-based HTTP server with OAuth authentication
+- Test server with direct OIDC authentication
+- Helm chart with Redis session storage
+- Plugin-based test framework
+- Docker container build
+- Kubernetes RBAC configuration
+
+## Quick Start
+
+### 1. Run mcp-base
+
+```bash
+# Clone and install
+git clone https://github.com/your-org/mcp-base.git
+cd mcp-base
+pip install -r requirements.txt
+
+# Start server
+python src/mcp_base_server.py --port 8000
+```
+
+### 2. Connect with Claude Desktop
+
+Add to `~/.config/claude/claude_desktop_config.json`:
+
+```json
+{
+  "mcpServers": {
+    "mcp-base": {
+      "url": "http://localhost:8000/mcp"
+    }
+  }
+}
+```
+
+### 3. Generate a Server
+
+Ask Claude:
+> "Use mcp-base to generate an MCP server called 'My Kubernetes Manager' that manages pods"
+
+Or call the tool directly:
+```
+generate_server_scaffold(server_name="My Kubernetes Manager")
+```
+
+## Features
+
+### Resources
+
+| URI | Description |
+|-----|-------------|
+| `pattern://architecture` | Architecture overview and design patterns |
+| `pattern://fastmcp-tools` | Tool implementation patterns |
+| `pattern://authentication` | Auth0/OIDC setup guide |
+| `pattern://testing` | Test framework patterns |
+| `template://server/*` | Server code templates |
+| `template://helm/*` | Helm chart templates |
+| `template://container/*` | Docker build templates |
+
+### Tools
+
+| Tool | Description |
+|------|-------------|
+| `generate_server_scaffold` | Generate complete MCP server project |
+| `render_template` | Render individual templates |
+| `list_templates` | List available templates |
+| `list_patterns` | List pattern documentation |
+| `get_pattern` | Get specific pattern docs |
+
+## Generated Server Structure
+
+```
+my-server/
+├── src/
+│   ├── my_server.py           # Main server (OAuth)
+│   ├── my_test_server.py      # Test server (OIDC)
+│   ├── my_server_tools.py     # Shared tools & resources
+│   ├── auth_fastmcp.py        # OAuth provider
+│   ├── auth_oidc.py           # OIDC middleware
+│   └── mcp_context.py         # User context extraction
+├── test/
+│   ├── plugins/               # Test plugins
+│   ├── test-mcp.py           # Test runner
+│   └── get-user-token.py     # Token acquisition
+├── chart/                     # Helm chart
+├── Dockerfile
+├── Makefile
+└── requirements.txt
+```
+
+## Configuration Options
+
+### generate_server_scaffold
+
+```python
+generate_server_scaffold(
+    server_name="My MCP Server",      # Required: Human-readable name
+    port=8000,                         # HTTP port (default: 8000)
+    default_namespace="default",       # K8s namespace (default: "default")
+    operator_cluster_roles="role1,role2",  # ClusterRoles to bind
+    include_helm=True,                 # Include Helm chart
+    include_test=True,                 # Include test framework
+    include_bin=True,                  # Include utility scripts
+    output_description="summary"       # "summary" or "full"
+)
+```
+
+### render_template
+
+```python
+render_template(
+    template_path="server/entry_point.py.j2",
+    server_name="My Server",
+    port=8000,
+    default_namespace="default"
+)
+```
+
+## Deployment
+
+### Local Development
+
+```bash
+# Main server (OAuth)
+python src/mcp_base_server.py --port 8000
+
+# Health check
+curl http://localhost:8000/healthz
+```
+
+### Docker
+
+```bash
+docker build -t mcp-base .
+docker run -p 8000:8000 mcp-base
+```
+
+### Kubernetes with Helm
+
+```bash
+# Configure
+cp chart/values.yaml chart/my-values.yaml
+# Edit my-values.yaml with your Auth0 credentials
+
+# Deploy
+helm install mcp-base chart/ -f chart/my-values.yaml
+```
+
+## Authentication Setup
+
+Generated servers use Auth0 for authentication. Required configuration:
+
+1. **Create Auth0 Application** (Machine-to-Machine or SPA)
+2. **Create Auth0 API** with appropriate scopes
+3. **Configure environment variables:**
+
+```bash
+export OIDC_ISSUER="https://your-tenant.auth0.com"
+export OIDC_AUDIENCE="https://your-api-identifier"
+export AUTH0_CLIENT_ID="your-client-id"
+export AUTH0_CLIENT_SECRET="your-client-secret"  # For M2M only
+```
+
+Or use the setup script:
+```bash
+python bin/setup-auth0.py --token YOUR_MANAGEMENT_API_TOKEN
+```
+
+## Testing Generated Servers
+
+```bash
+# Get user token (opens browser)
+./test/get-user-token.py
+
+# Run tests against test server
+./test/test-mcp.py --url http://localhost:8001/test \
+    --token-file /tmp/user-token.txt
+
+# Output formats
+./test/test-mcp.py --url http://localhost:8001/test \
+    --output results.json --format json
+
+./test/test-mcp.py --url http://localhost:8001/test \
+    --output results.xml --format junit
+```
+
+## Architecture
+
+See [ARCHITECTURE.md](ARCHITECTURE.md) for detailed documentation on:
+
+- Dual-server pattern (Main + Test servers)
+- Shared tools module architecture
+- Authentication flows
+- MCP protocol type handling
+- Common pitfalls and solutions
+
+## Key Design Decisions
+
+1. **Dual Servers**: Separate OAuth (production) and OIDC (testing) endpoints enable headless automated testing while maintaining full OAuth security for production.
+
+2. **Shared Tools Module**: Both servers import from a single `*_tools.py` file ensuring identical behavior.
+
+3. **Plugin-Based Testing**: Tests are discovered automatically from `test/plugins/test_*.py` files.
+
+4. **Redis Session Storage**: MCP tokens are stored encrypted in Redis for scalability.
+
+## Development
+
+### Adding Templates
+
+1. Create `.j2` file in `templates/`
+2. Register resource in `src/mcp_base_tools.py`
+3. Add to scaffold generation if needed
+
+### Adding Patterns
+
+1. Create `.md` file in `patterns/`
+2. Register resource in `src/mcp_base_tools.py`
+
+### Running Tests
+
+```bash
+# With authentication
+./test/get-user-token.py
+./test/test-mcp.py --url http://localhost:8001/test \
+    --token-file /tmp/user-token.txt
+```
+
+## Reference Implementation
+
+See `example/cnpg-mcp/` for a complete working MCP server managing CloudNativePG PostgreSQL clusters.
+
+## Resources
+
+- [MCP Protocol Specification](https://modelcontextprotocol.io/)
+- [FastMCP Documentation](https://github.com/jlowin/fastmcp)
+- [Auth0 Documentation](https://auth0.com/docs)
+
+## License
+
+[Your License Here]

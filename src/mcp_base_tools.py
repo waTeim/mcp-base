@@ -643,6 +643,12 @@ def register_resources(mcp):
         pattern_path = PATTERNS_DIR / "deployment.md"
         return pattern_path.read_text()
 
+    @mcp.resource("pattern://architecture")
+    def get_architecture_pattern() -> str:
+        """Architecture documentation for MCP server design patterns and pitfalls."""
+        architecture_path = BASE_DIR / "ARCHITECTURE.md"
+        return architecture_path.read_text()
+
 
 # ============================================================================
 # Tool Registration

@@ -69,11 +69,12 @@ The server exposes these resources:
 - `template://Makefile` - Build automation
 
 ### Pattern Resources (`pattern://`)
+- `pattern://architecture` - **Architecture overview, design patterns, and common pitfalls**
 - `pattern://fastmcp-tools` - FastMCP tool implementation
 - `pattern://authentication` - Auth0/OIDC setup
 - `pattern://kubernetes-integration` - K8s client patterns
 - `pattern://helm-chart` - Helm chart creation
-- `pattern://testing` - Test framework patterns
+- `pattern://testing` - Test framework patterns (includes MCP SDK type handling)
 - `pattern://deployment` - Production deployment
 
 ## MCP Tools
