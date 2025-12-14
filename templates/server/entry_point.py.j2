@@ -23,8 +23,8 @@ import uvicorn
 from starlette.routing import Route
 from starlette.responses import JSONResponse
 
-# Import tool registration from tools module
-from {{ server_name_snake }}_tools import register_tools
+# Import tool and resource registration from tools module
+from {{ server_name_snake }}_tools import register_tools, register_resources
 
 # Configure logging
 logging.basicConfig(
@@ -58,12 +58,13 @@ in Kubernetes environments.
 )
 
 # ============================================================================
-# Register Tools from tools module
+# Register Resources and Tools from tools module
 # ============================================================================
 
+register_resources(mcp)
 register_tools(mcp)
 
-logger.info("Tools registered with MCP server")
+logger.info("Resources and tools registered with MCP server")
 
 # ============================================================================
 # Health Check Endpoints

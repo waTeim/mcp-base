@@ -28,8 +28,8 @@ import uvicorn
 from starlette.routing import Route
 from starlette.responses import JSONResponse
 
-# Import shared tools registration
-from {{ server_name_snake }}_tools import register_tools
+# Import shared tools and resources registration
+from {{ server_name_snake }}_tools import register_tools, register_resources
 
 # Import OIDC auth
 from auth_oidc import OIDCAuthProvider, OIDCAuthMiddleware
@@ -66,12 +66,13 @@ Use this for testing with standard OIDC authentication.
 )
 
 # ============================================================================
-# Register Tools
+# Register Resources and Tools
 # ============================================================================
 
+register_resources(mcp)
 register_tools(mcp)
 
-logger.info("Tools registered with test MCP server")
+logger.info("Resources and tools registered with test MCP server")
 
 # ============================================================================
 # Health Check Endpoints

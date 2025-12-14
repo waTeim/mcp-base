@@ -139,6 +139,48 @@ async def example_tool_impl(ctx: MCPContext, name: str) -> str:
 
 
 # ============================================================================
+# Resource Registration
+# ============================================================================
+
+def register_resources(mcp):
+    """
+    Register all resources with the MCP server instance.
+
+    Resources provide read-only access to data, configurations, or documentation.
+    Unlike tools (which perform actions), resources are passive data sources.
+
+    Args:
+        mcp: FastMCP server instance
+    """
+
+    # Example: Expose configuration as a resource
+    # @mcp.resource("config://server/settings")
+    # def get_server_settings() -> str:
+    #     """Server configuration and current settings."""
+    #     return json.dumps({
+    #         "namespace": "default",
+    #         "version": "1.0.0",
+    #         "features": ["feature1", "feature2"]
+    #     }, indent=2)
+
+    # Example: Expose documentation as a resource
+    # @mcp.resource("docs://api/reference")
+    # def get_api_reference() -> str:
+    #     """API reference documentation."""
+    #     return """
+    #     # {{ server_name }} API Reference
+    #
+    #     ## Available Tools
+    #     - example_tool: Greets a user
+    #
+    #     ## Resources
+    #     - config://server/settings: Server configuration
+    #     """
+
+    pass  # Remove this line when you add resources
+
+
+# ============================================================================
 # Tool Registration
 # ============================================================================
 

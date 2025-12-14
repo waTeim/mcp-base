@@ -27,9 +27,12 @@ from fastmcp import FastMCP, Context
 import uvicorn
 from starlette.routing import Route
 from starlette.responses import JSONResponse
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.requests import Request
+import json as json_module
 
-# Import shared tools registration
-from mcp_base_tools import register_tools
+# Import shared tools and resources registration
+from mcp_base_tools import register_tools, register_resources
 
 # Import OIDC auth
 from auth_oidc import OIDCAuthProvider, OIDCAuthMiddleware
@@ -66,12 +69,89 @@ Use this for testing with standard OIDC authentication.
 )
 
 # ============================================================================
-# Register Tools
+# Register Resources and Tools
 # ============================================================================
 
+logger.info("Registering resources...")
+register_resources(mcp)
+
+# Debug: Log registered resources
+try:
+    if hasattr(mcp, '_resource_manager') and hasattr(mcp._resource_manager, '_resources'):
+        resource_count = len(mcp._resource_manager._resources)
+        logger.info(f"   Registered {resource_count} resources")
+        for uri in list(mcp._resource_manager._resources.keys())[:5]:
+            logger.info(f"      - {uri}")
+        if resource_count > 5:
+            logger.info(f"      ... and {resource_count - 5} more")
+    else:
+        logger.warning("   Cannot access resource manager")
+except Exception as e:
+    logger.warning(f"   Error inspecting resources: {e}")
+
+logger.info("Registering tools...")
 register_tools(mcp)
 
-logger.info("Tools registered with test MCP server")
+logger.info("✅ Resources and tools registered with test MCP server")
+
+# ============================================================================
+# MCP Protocol Logging Middleware
+# ============================================================================
+
+def add_mcp_logging():
+    """Add detailed logging for MCP protocol operations."""
+
+    # Wrap at the resource_manager level
+    original_get_resources = mcp._resource_manager.get_resources
+    async def logged_get_resources():
+        logger.info("📋 MCP: get_resources called on resource_manager")
+        logger.info(f"   Internal state: {len(mcp._resource_manager._resources)} resources in _resources dict")
+        result = await original_get_resources()
+        logger.info(f"   → Type of result: {type(result)}")
+
+        # Get actual resource objects (dict values, not keys!)
+        if isinstance(result, dict):
+            result_list = list(result.values())
+            logger.info(f"   → Dict with {len(result_list)} resource objects")
+            for i, r in enumerate(result_list[:3]):
+                logger.info(f"      [{i}] Type: {type(r)}")
+                if hasattr(r, 'uri'):
+                    logger.info(f"           URI: {r.uri}")
+                if hasattr(r, 'name'):
+                    logger.info(f"           Name: {r.name}")
+            if len(result_list) > 3:
+                logger.info(f"      ... and {len(result_list) - 3} more")
+        else:
+            logger.info(f"   → Returning {len(result)} resources (not a dict)")
+
+        return result
+    mcp._resource_manager.get_resources = logged_get_resources
+
+    # Also wrap the FastMCP _list_resources handler
+    original_list_resources_handler = mcp._list_resources
+    async def logged_list_resources_handler(context):
+        logger.info("🔍 MCP: _list_resources (middleware) called")
+        result = await original_list_resources_handler(context)
+        logger.info(f"   → Result type: {type(result)}")
+        logger.info(f"   → Result length: {len(result)}")
+        return result
+    mcp._list_resources = logged_list_resources_handler
+
+    # Wrap the MCP protocol handler that returns MCPResource objects
+    original_list_resources_mcp = mcp._list_resources_mcp
+    async def logged_list_resources_mcp():
+        logger.info("🔍 MCP: _list_resources_mcp (protocol) called")
+        result = await original_list_resources_mcp()
+        logger.info(f"   → MCP protocol result type: {type(result)}")
+        logger.info(f"   → MCP protocol result length: {len(result)}")
+        if len(result) > 0:
+            logger.info(f"   → First item type: {type(result[0])}")
+            logger.info(f"   → First item: {result[0]}")
+        return result
+    mcp._list_resources_mcp = logged_list_resources_mcp
+
+add_mcp_logging()
+logger.info("✅ MCP protocol logging enabled")
 
 # ============================================================================
 # Health Check Endpoints
@@ -125,7 +205,27 @@ def main():
     logger.info(f"   Audience: {oidc_provider.audience}")
 
     # Create FastMCP HTTP app
+    logger.info("Creating HTTP app at path /test...")
     app = mcp.http_app(path="/test")
+    logger.info(f"   HTTP app created: {type(app)}")
+
+    # Add simple request logging middleware (no body reading to preserve streaming)
+    class RequestLoggingMiddleware(BaseHTTPMiddleware):
+        async def dispatch(self, request: Request, call_next):
+            # Log all non-health-check requests
+            if request.url.path not in ["/healthz", "/readyz"]:
+                logger.info(f"🌐 HTTP {request.method} {request.url.path}")
+
+            response = await call_next(request)
+
+            # Log response status for non-health-checks
+            if request.url.path not in ["/healthz", "/readyz"]:
+                logger.info(f"   ← HTTP {response.status_code}")
+
+            return response
+
+    logger.info("Adding request logging middleware...")
+    app.add_middleware(RequestLoggingMiddleware)
 
     # Add OIDC middleware
     logger.info("Adding OIDC authentication middleware...")

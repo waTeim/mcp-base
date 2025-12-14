@@ -115,6 +115,9 @@ async def list_templates_impl() -> str:
     result += "- `Makefile.j2` - Build and deployment automation\n"
     result += "- `test/test_runner.py.j2` - Test runner script\n"
     result += "- `test/plugin_base.py` - Test plugin base class (as-is)\n"
+    result += "- `test/test_list_resources.py` - Test resource listing (as-is)\n"
+    result += "- `test/test_read_resource.py` - Test resource reading (as-is)\n"
+    result += "- `test/test_list_prompts.py` - Test prompt listing (as-is)\n"
     result += "- `bin/create_secrets.py.j2` - Kubernetes secret creator\n"
     result += "- `bin/setup_rbac.py.j2` - RBAC setup script\n"
     result += "- `bin/setup_auth0.py` - Auth0 tenant setup (as-is)\n"
@@ -409,6 +412,9 @@ async def generate_server_scaffold_impl(
             ("test/plugin_base.py", "test/plugins/__init__.py"),
             ("test/get_user_token.py", "test/get-user-token.py"),
             ("test/auth_proxy.py", "test/mcp-auth-proxy.py"),
+            ("test/test_list_resources.py", "test/plugins/test_list_resources.py"),
+            ("test/test_read_resource.py", "test/plugins/test_read_resource.py"),
+            ("test/test_list_prompts.py", "test/plugins/test_list_prompts.py"),
         ]
 
         for template_path, output_path in test_templates:
@@ -516,6 +522,126 @@ class TestExampleTool(TestPlugin):
             result += files[path]
             result += "\n```\n\n"
         return result
+
+
+# ============================================================================
+# Resource Registration
+# ============================================================================
+
+def register_resources(mcp):
+    """
+    Register all resources with the MCP server instance.
+
+    This function is called from the server entry points to register
+    all resource implementations with the FastMCP instance.
+
+    Args:
+        mcp: FastMCP server instance
+    """
+
+    # Template resources
+    @mcp.resource("template://server/entry_point.py")
+    def get_entry_point_template() -> str:
+        """Server entry point template (HTTP transport)."""
+        template_path = TEMPLATES_DIR / "server" / "entry_point.py.j2"
+        return template_path.read_text()
+
+    @mcp.resource("template://server/auth_fastmcp.py")
+    def get_auth_fastmcp_template() -> str:
+        """FastMCP Auth0 provider configuration template."""
+        template_path = TEMPLATES_DIR / "server" / "auth_fastmcp.py.j2"
+        return template_path.read_text()
+
+    @mcp.resource("template://server/auth_oidc.py")
+    def get_auth_oidc() -> str:
+        """Generic OIDC authentication provider (as-is)."""
+        template_path = TEMPLATES_DIR / "server" / "auth_oidc.py"
+        return template_path.read_text()
+
+    @mcp.resource("template://server/mcp_context.py")
+    def get_mcp_context() -> str:
+        """MCPContext class and with_mcp_context decorator (as-is)."""
+        template_path = TEMPLATES_DIR / "server" / "mcp_context.py"
+        return template_path.read_text()
+
+    @mcp.resource("template://server/user_hash.py")
+    def get_user_hash() -> str:
+        """User ID generation utilities (as-is)."""
+        template_path = TEMPLATES_DIR / "server" / "user_hash.py"
+        return template_path.read_text()
+
+    @mcp.resource("template://server/tools.py")
+    def get_tools_template() -> str:
+        """Tool implementation skeleton template."""
+        template_path = TEMPLATES_DIR / "server" / "tools.py.j2"
+        return template_path.read_text()
+
+    @mcp.resource("template://container/Dockerfile")
+    def get_dockerfile_template() -> str:
+        """Container Dockerfile template."""
+        template_path = TEMPLATES_DIR / "container" / "Dockerfile.j2"
+        return template_path.read_text()
+
+    @mcp.resource("template://container/requirements.txt")
+    def get_requirements() -> str:
+        """Python requirements.txt (as-is)."""
+        template_path = TEMPLATES_DIR / "container" / "requirements.txt"
+        return template_path.read_text()
+
+    @mcp.resource("template://helm/Chart.yaml")
+    def get_chart_yaml_template() -> str:
+        """Helm Chart.yaml template with Redis dependency."""
+        template_path = TEMPLATES_DIR / "helm" / "Chart.yaml.j2"
+        return template_path.read_text()
+
+    @mcp.resource("template://helm/values.yaml")
+    def get_values_yaml_template() -> str:
+        """Helm values.yaml template."""
+        template_path = TEMPLATES_DIR / "helm" / "values.yaml.j2"
+        return template_path.read_text()
+
+    @mcp.resource("template://Makefile")
+    def get_makefile_template() -> str:
+        """Build automation Makefile template."""
+        template_path = TEMPLATES_DIR / "Makefile.j2"
+        return template_path.read_text()
+
+    # Pattern resources
+    @mcp.resource("pattern://fastmcp-tools")
+    def get_fastmcp_tools_pattern() -> str:
+        """Pattern documentation for implementing FastMCP tools."""
+        pattern_path = PATTERNS_DIR / "fastmcp-tools.md"
+        return pattern_path.read_text()
+
+    @mcp.resource("pattern://authentication")
+    def get_authentication_pattern() -> str:
+        """Pattern documentation for Auth0/OIDC authentication."""
+        pattern_path = PATTERNS_DIR / "authentication.md"
+        return pattern_path.read_text()
+
+    @mcp.resource("pattern://kubernetes-integration")
+    def get_kubernetes_pattern() -> str:
+        """Pattern documentation for Kubernetes API integration."""
+        pattern_path = PATTERNS_DIR / "kubernetes-integration.md"
+        return pattern_path.read_text()
+
+    @mcp.resource("pattern://helm-chart")
+    def get_helm_chart_pattern() -> str:
+        """Pattern documentation for Helm chart creation."""
+        pattern_path = PATTERNS_DIR / "helm-chart.md"
+        return pattern_path.read_text()
+
+    @mcp.resource("pattern://testing")
+    def get_testing_pattern() -> str:
+        """Pattern documentation for testing MCP servers."""
+        pattern_path = PATTERNS_DIR / "testing.md"
+        return pattern_path.read_text()
+
+    @mcp.resource("pattern://deployment")
+    def get_deployment_pattern() -> str:
+        """Pattern documentation for production deployment."""
+        pattern_path = PATTERNS_DIR / "deployment.md"
+        return pattern_path.read_text()
 
 
 # ============================================================================
