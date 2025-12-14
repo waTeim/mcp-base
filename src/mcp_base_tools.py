@@ -18,7 +18,16 @@ from jinja2 import Environment, FileSystemLoader, select_autoescape
 # Path Configuration
 # ============================================================================
 
-BASE_DIR = Path(__file__).parent.parent
+# In development: __file__ is in src/, BASE_DIR is parent of src/
+# In container: __file__ is in /app/, BASE_DIR is /app/
+# Both scenarios work with parent.parent in dev, but only parent in container
+# Use parent.parent for dev (src/ -> workspaces/mcp-base/), then check if templates exists
+# If not, use parent (container scenario)
+_possible_base = Path(__file__).parent.parent
+if not (_possible_base / "templates").exists():
+    _possible_base = Path(__file__).parent
+
+BASE_DIR = _possible_base
 TEMPLATES_DIR = BASE_DIR / "templates"
 PATTERNS_DIR = BASE_DIR / "patterns"
 

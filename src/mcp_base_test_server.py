@@ -42,9 +42,14 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Set log levels for external libraries
+# Suppress noisy loggers
 logging.getLogger("httpx").setLevel(logging.WARNING)
-logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
+
+# Custom filter to exclude health check endpoints from access logs
+class HealthCheckFilter(logging.Filter):
+    def filter(self, record: logging.LogRecord) -> bool:
+        # Exclude health check paths from access logs
+        return not any(path in record.getMessage() for path in ["/healthz", "/readyz", "/health"])
 
 # ============================================================================
 # FastMCP Server Initialization
@@ -94,8 +99,8 @@ def main():
     parser.add_argument(
         "--port",
         type=int,
-        default=int(os.getenv("TEST_PORT", "8001")),
-        help="Port to listen on (default: 8001)"
+        default=int(os.getenv("TEST_PORT", "4209")),
+        help="Port to listen on (default: 4209)"
     )
     parser.add_argument(
         "--host",
@@ -134,7 +139,7 @@ def main():
     app.add_route("/healthz", liveness_check)
     app.add_route("/readyz", readiness_check)
 
-    logger.info("Test server ready")
+    logger.info("✅ Test server ready")
     logger.info("")
     logger.info("To test with Auth0 JWT token:")
     logger.info("  1. Get token: ./test/get-user-token.py")
@@ -143,12 +148,16 @@ def main():
     logger.info("           --token-file /tmp/user-token.txt")
     logger.info("")
 
+    # Add health check filter to uvicorn access logger
+    logging.getLogger("uvicorn.access").addFilter(HealthCheckFilter())
+
     # Run server
     uvicorn.run(
         app,
         host=args.host,
         port=args.port,
-        log_level="info"
+        log_level="info",
+        ws="none"
     )
 
 

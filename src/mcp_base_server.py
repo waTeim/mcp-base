@@ -35,7 +35,12 @@ logger = logging.getLogger(__name__)
 
 # Suppress noisy loggers
 logging.getLogger("httpx").setLevel(logging.WARNING)
-logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
+
+# Custom filter to exclude health check endpoints from access logs
+class HealthCheckFilter(logging.Filter):
+    def filter(self, record: logging.LogRecord) -> bool:
+        # Exclude health check paths from access logs
+        return not any(path in record.getMessage() for path in ["/healthz", "/readyz", "/health"])
 
 # ============================================================================
 # Path Configuration
@@ -216,6 +221,31 @@ def run_http_transport(port: int = 4208, host: str = "0.0.0.0"):
     import uvicorn
     from starlette.routing import Route
     from starlette.responses import JSONResponse
+    from auth_fastmcp import create_auth0_oauth_proxy, get_auth_config_summary, load_oidc_config_from_file
+
+    logger.info("Initializing FastMCP OAuth Proxy for Auth0...")
+
+    # Load configuration
+    config = load_oidc_config_from_file() or {}
+    issuer = config.get("issuer") or os.getenv("OIDC_ISSUER") or ""
+    audience = config.get("audience") or os.getenv("OIDC_AUDIENCE") or ""
+    client_id = config.get("client_id") or os.getenv("AUTH0_CLIENT_ID") or ""
+    public_url = config.get("public_url") or os.getenv("PUBLIC_URL") or ""
+
+    # Create OAuth Proxy (handles token issuance)
+    auth_proxy = create_auth0_oauth_proxy()
+
+    # Log configuration summary
+    config_summary = get_auth_config_summary(issuer, audience, client_id, public_url)
+    logger.info("=" * 80)
+    logger.info("FastMCP OAuth Configuration:")
+    logger.info("=" * 80)
+    for key, value in config_summary.items():
+        logger.info(f"  {key}: {value}")
+    logger.info("=" * 80)
+
+    # Set OAuth on mcp instance
+    mcp.auth = auth_proxy
 
     async def health_check(request):
         """Health check endpoint."""
@@ -229,19 +259,39 @@ def run_http_transport(port: int = 4208, host: str = "0.0.0.0"):
         """Kubernetes readiness probe endpoint."""
         return JSONResponse({"status": "ready"})
 
-    # Create app with MCP at /mcp endpoint using modern http_app
-    app = mcp.http_app(path="/mcp")
+    # Create app with OAuth at /mcp endpoint
+    app = mcp.http_app(transport="http", path="/mcp")
 
     # Add health check routes
     app.add_route("/health", health_check, methods=["GET"])
     app.add_route("/healthz", liveness_check, methods=["GET"])
     app.add_route("/readyz", readiness_check, methods=["GET"])
 
-    logger.info(f"Starting MCP Base Server on {host}:{port}")
-    logger.info(f"MCP endpoint: http://{host}:{port}/mcp")
-    logger.info(f"Health check: http://{host}:{port}/health")
+    logger.info("")
+    logger.info("=" * 80)
+    logger.info("Server Configuration:")
+    logger.info("=" * 80)
+    logger.info(f"  Listening on: {host}:{port}")
+    logger.info(f"  MCP Endpoint: /mcp")
+    logger.info(f"  Auth: FastMCP OAuth Proxy (issues MCP tokens)")
+    logger.info("  Tools: MCP server construction tools")
+    logger.info(f"  OAuth Discovery: /.well-known/oauth-authorization-server")
+    logger.info(f"  Client Registration: /register")
+    logger.info("=" * 80)
+    logger.info("")
+    logger.info("To get an MCP token:")
+    logger.info(f"  ./test/get-mcp-token.py --url http://{host}:{port}")
+    logger.info("")
+    logger.info("To test with MCP token:")
+    logger.info("  ./test/test-mcp.py --transport http \\")
+    logger.info(f"    --url http://{host}:{port}/mcp \\")
+    logger.info("    --token-file /tmp/mcp-token.txt")
+    logger.info("")
 
-    uvicorn.run(app, host=host, port=port, log_level="warning")
+    # Add health check filter to uvicorn access logger
+    logging.getLogger("uvicorn.access").addFilter(HealthCheckFilter())
+
+    uvicorn.run(app, host=host, port=port, log_level="info", ws="none")
 
 
 def main():
