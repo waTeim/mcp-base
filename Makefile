@@ -5,7 +5,7 @@
 .PHONY: all
 all: config build
 
-# Include auto-generated configuration from make_config.py
+# Include auto-generated configuration from make-config.py
 -include make.env
 
 # Default values (overridden by make.env)
@@ -31,7 +31,7 @@ config: make.env ## Generate make.env configuration file
 
 make.env:
 	@echo "Generating make.env configuration..."
-	python3 bin/make_config.py
+	python3 bin/make-config.py
 	@echo "Configuration generated. Edit make.env to customize settings."
 
 .PHONY: config-show
