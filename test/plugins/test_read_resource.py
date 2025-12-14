@@ -84,8 +84,7 @@ class TestReadPatternResource(TestPlugin):
 
             # Verify it's a markdown document with expected content
             expected_markers = [
-                "# FastMCP Tools",
-                "Pattern",
+                "# FastMCP Tool Implementation Pattern",
                 "@mcp.tool",
             ]
 
