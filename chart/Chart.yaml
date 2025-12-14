@@ -6,10 +6,10 @@ description: MCP Base - A foundation for building Model Context Protocol servers
 type: application
 
 # Chart version - increment with each change
-version: 0.1.0
+version: 1.0.1
 
 # Application version
-appVersion: "0.1.0"
+appVersion: "1.0.0"
 
 # Keywords for search
 keywords:
@@ -19,10 +19,11 @@ keywords:
   - oauth
   - oidc
 
-# Maintainers
-maintainers:
-  - name: MCP Base Team
-
 # Dependencies
-# Redis is included as a subchart for OAuth session persistence
-# No external dependencies - Redis templates are included directly
+dependencies:
+  - name: redis
+    version: "0.16.4"
+    repository: "oci://registry-1.docker.io/cloudpirates"
+    condition: redis.enabled
+    tags:
+      - persistence

@@ -211,7 +211,7 @@ register_tools(mcp)
 # Server Entry Point
 # ============================================================================
 
-def run_http_transport(port: int = 8000, host: str = "0.0.0.0"):
+def run_http_transport(port: int = 4208, host: str = "0.0.0.0"):
     """Run the MCP server with HTTP transport."""
     import uvicorn
     from starlette.routing import Route
@@ -221,11 +221,21 @@ def run_http_transport(port: int = 8000, host: str = "0.0.0.0"):
         """Health check endpoint."""
         return JSONResponse({"status": "healthy", "server": "mcp-base"})
 
+    async def liveness_check(request):
+        """Kubernetes liveness probe endpoint."""
+        return JSONResponse({"status": "alive"})
+
+    async def readiness_check(request):
+        """Kubernetes readiness probe endpoint."""
+        return JSONResponse({"status": "ready"})
+
     # Create app with MCP at /mcp endpoint using modern http_app
     app = mcp.http_app(path="/mcp")
 
-    # Add health check route
+    # Add health check routes
     app.add_route("/health", health_check, methods=["GET"])
+    app.add_route("/healthz", liveness_check, methods=["GET"])
+    app.add_route("/readyz", readiness_check, methods=["GET"])
 
     logger.info(f"Starting MCP Base Server on {host}:{port}")
     logger.info(f"MCP endpoint: http://{host}:{port}/mcp")
@@ -242,13 +252,13 @@ def main():
         epilog="""
 Examples:
   # Run HTTP server (default)
-  python mcp_base_server.py --port 8000
+  python mcp_base_server.py --port 4208
 
   # Run with custom host
   python mcp_base_server.py --host 127.0.0.1 --port 3000
 
 Environment Variables:
-  PORT        Default HTTP port (default: 8000)
+  PORT        Default HTTP port (default: 4208)
   HOST        Default host binding (default: 0.0.0.0)
         """
     )
@@ -256,8 +266,8 @@ Environment Variables:
     parser.add_argument(
         "--port",
         type=int,
-        default=int(os.environ.get("PORT", 8000)),
-        help="HTTP server port (default: 8000)"
+        default=int(os.environ.get("PORT", 4208)),
+        help="HTTP server port (default: 4208)"
     )
     parser.add_argument(
         "--host",

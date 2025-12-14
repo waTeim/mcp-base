@@ -1026,7 +1026,7 @@ def save_output_files(
     # Load make.env to get image repository and tag
     make_env = load_make_env(output_dir)
     registry = make_env.get('REGISTRY', 'your-registry.example.com')
-    image_name = make_env.get('IMAGE_NAME', 'cnpg-mcp')
+    image_name = make_env.get('IMAGE_NAME', 'mcp-base-server')
     image_tag = make_env.get('TAG', '')
     image_repo = f"{registry}/{image_name}"
 
@@ -1086,7 +1086,6 @@ oidc:
 # Service configuration
 service:
   type: ClusterIP
-  port: 4204
 
 # Ingress (configure for external access)
 ingress:
@@ -1110,11 +1109,6 @@ resources:
   limits:
     memory: "512Mi"
     cpu: "500m"
-
-# ServiceAccount
-serviceAccount:
-  create: true
-  name: cnpg-mcp
 
 # Security
 podSecurityContext:
@@ -1518,7 +1512,7 @@ Examples:
         # Get image info from make.env if available
         make_env = load_make_env(args.output_dir)
         registry = make_env.get('REGISTRY', 'your-registry')
-        image_name = make_env.get('IMAGE_NAME', 'cnpg-mcp')
+        image_name = make_env.get('IMAGE_NAME', 'mcp-base-server')
         tag = make_env.get('TAG', 'latest')
 
         print("1. Create Kubernetes Secret with Auth0 credentials:")
@@ -1535,8 +1529,8 @@ Examples:
         print("   helm install mcp-server ./chart -f auth0-values.yaml")
         print()
         print("5. Verify deployment:")
-        print("   kubectl get pods -l app.kubernetes.io/name=cnpg-mcp")
-        print("   kubectl logs -l app.kubernetes.io/name=cnpg-mcp -f")
+        print("   kubectl get pods -l app.kubernetes.io/name=<release-name>")
+        print("   kubectl logs -l app.kubernetes.io/name=<release-name> -f")
         print()
         print("6. Test OAuth flow:")
         print("   # Check OAuth metadata endpoint")
