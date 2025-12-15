@@ -49,12 +49,12 @@ RUN useradd -m -u 1000 mcpuser && \
 USER mcpuser
 
 # Expose HTTP port
-EXPOSE 8000
+EXPOSE 4208
 
 # Health check endpoint
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-    CMD curl -f http://localhost:8000/healthz || exit 1
+    CMD curl -f http://localhost:4208/healthz || exit 1
 
 # Default to HTTP transport (for Kubernetes deployment)
 # OIDC configuration should be provided via config file at /etc/mcp/oidc.yaml
-CMD ["python", "mcp_base_server.py", "--transport", "http", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["python", "mcp_base_server.py", "--host", "0.0.0.0", "--port", "4208"]

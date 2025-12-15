@@ -28,8 +28,8 @@ import uvicorn
 from starlette.routing import Route
 from starlette.responses import JSONResponse
 
-# Import shared tools registration
-from {{ server_name_snake }}_tools import register_tools
+# Import shared tools and resources registration
+from {{ server_name_snake }}_tools import register_tools, register_resources
 
 # Import OIDC auth
 from auth_oidc import OIDCAuthProvider, OIDCAuthMiddleware
@@ -42,9 +42,14 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Set log levels for external libraries
+# Suppress noisy loggers
 logging.getLogger("httpx").setLevel(logging.WARNING)
-logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
+
+# Custom filter to exclude health check endpoints from access logs
+class HealthCheckFilter(logging.Filter):
+    def filter(self, record: logging.LogRecord) -> bool:
+        # Exclude health check paths from access logs
+        return not any(path in record.getMessage() for path in ["/healthz", "/readyz", "/health"])
 
 # ============================================================================
 # FastMCP Server Initialization
@@ -61,12 +66,13 @@ Use this for testing with standard OIDC authentication.
 )
 
 # ============================================================================
-# Register Tools
+# Register Resources and Tools
 # ============================================================================
 
+register_resources(mcp)
 register_tools(mcp)
 
-logger.info("Tools registered with test MCP server")
+logger.info("Resources and tools registered with test MCP server")
 
 # ============================================================================
 # Health Check Endpoints
@@ -134,7 +140,7 @@ def main():
     app.add_route("/healthz", liveness_check)
     app.add_route("/readyz", readiness_check)
 
-    logger.info("Test server ready")
+    logger.info("✅ Test server ready")
     logger.info("")
     logger.info("To test with Auth0 JWT token:")
     logger.info("  1. Get token: ./test/get-user-token.py")
@@ -143,12 +149,16 @@ def main():
     logger.info("           --token-file /tmp/user-token.txt")
     logger.info("")
 
+    # Add health check filter to uvicorn access logger
+    logging.getLogger("uvicorn.access").addFilter(HealthCheckFilter())
+
     # Run server
     uvicorn.run(
         app,
         host=args.host,
         port=args.port,
-        log_level="info"
+        log_level="info",
+        ws="none"
     )
 
 

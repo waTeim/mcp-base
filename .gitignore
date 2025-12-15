@@ -12,6 +12,7 @@ token.txt
 tmp
 results.json
 Chart.lock
+chart/charts/*
 
 # OS generated files #
 ######################
