@@ -90,7 +90,8 @@ async def list_templates_impl() -> str:
     result += "- `server/auth_oidc.py` - Generic OIDC provider (as-is)\n"
     result += "- `server/mcp_context.py` - MCPContext and with_mcp_context decorator\n"
     result += "- `server/user_hash.py` - User ID generation from JWT\n"
-    result += "- `server/tools.py.j2` - Tool implementation skeleton\n\n"
+    result += "- `server/tools.py.j2` - Tool implementation skeleton\n"
+    result += "- `server/prompt_registry.py.j2` - Versioned prompt management with hot-reload\n\n"
 
     # Container templates
     result += "## Container Templates\n"
@@ -151,6 +152,7 @@ async def list_patterns_impl() -> str:
         ("helm-chart", "Helm chart creation from helm create"),
         ("testing", "Plugin-based test framework"),
         ("deployment", "Production Kubernetes deployment"),
+        ("prompt-management", "Versioned prompts with ConfigMap storage and hot-reload"),
     ]
 
     for name, description in patterns:
@@ -181,7 +183,8 @@ async def get_pattern_impl(name: str) -> str:
         "kubernetes-integration",
         "helm-chart",
         "testing",
-        "deployment"
+        "deployment",
+        "prompt-management"
     ]
 
     if name not in valid_patterns:
@@ -330,6 +333,7 @@ async def generate_server_scaffold_impl(
         ("server/test_server.py.j2", f"src/{server_name_snake}_test_server.py"),
         ("server/auth_fastmcp.py.j2", "src/auth_fastmcp.py"),
         ("server/tools.py.j2", f"src/{server_name_snake}_tools.py"),
+        ("server/prompt_registry.py.j2", "src/prompt_registry.py"),
     ]
 
     # As-is server files
@@ -376,6 +380,7 @@ async def generate_server_scaffold_impl(
             ("helm/templates/deployment.yaml.j2", "chart/templates/deployment.yaml"),
             ("helm/templates/service.yaml.j2", "chart/templates/service.yaml"),
             ("helm/templates/configmap.yaml.j2", "chart/templates/configmap.yaml"),
+            ("helm/templates/prompts-configmap.yaml.j2", "chart/templates/prompts-configmap.yaml"),
             ("helm/templates/serviceaccount.yaml.j2", "chart/templates/serviceaccount.yaml"),
             ("helm/templates/rolebinding.yaml.j2", "chart/templates/rolebinding.yaml"),
             ("helm/templates/ingress.yaml.j2", "chart/templates/ingress.yaml"),
@@ -586,6 +591,12 @@ def register_resources(mcp):
         template_path = TEMPLATES_DIR / "server" / "tools.py.j2"
         return template_path.read_text()
 
+    @mcp.resource("template://server/prompt_registry.py")
+    def get_prompt_registry_template() -> str:
+        """Versioned prompt management with hot-reload template."""
+        template_path = TEMPLATES_DIR / "server" / "prompt_registry.py.j2"
+        return template_path.read_text()
+
     @mcp.resource("template://container/Dockerfile")
     def get_dockerfile_template() -> str:
         """Container Dockerfile template."""
@@ -657,6 +668,12 @@ def register_resources(mcp):
     def get_deployment_pattern() -> str:
         """Pattern documentation for production deployment."""
         pattern_path = PATTERNS_DIR / "deployment.md"
+        return pattern_path.read_text()
+
+    @mcp.resource("pattern://prompt-management")
+    def get_prompt_management_pattern() -> str:
+        """Pattern documentation for versioned prompts with ConfigMap storage and hot-reload."""
+        pattern_path = PATTERNS_DIR / "prompt-management.md"
         return pattern_path.read_text()
 
     @mcp.resource("pattern://architecture")

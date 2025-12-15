@@ -36,6 +36,7 @@ class TestListTemplates(TestPlugin):
 
             expected_templates = [
                 "entry_point.py.j2",
+                "prompt_registry.py.j2",  # Versioned prompt management
                 "Dockerfile.j2",
                 "Chart.yaml.j2",
                 "Makefile.j2",

@@ -41,12 +41,16 @@ spec:
           env:
             - name: PYTHONUNBUFFERED
               value: "1"
+            {{- if .Values.prompts.enabled }}
+            - name: PROMPTS_PATH
+              value: "/etc/mcp/prompts/prompts.yaml"
+            {{- end }}
 
-          # Mount OIDC configuration as volume
+          # Mount configuration volumes
           volumeMounts:
             # Always mount ConfigMap for OIDC config
             - name: oidc-config
-              mountPath: /etc/mcp
+              mountPath: /etc/mcp/oidc
               readOnly: true
             # Mount Auth0 credentials secret
             - name: auth0-credentials
@@ -56,6 +60,12 @@ spec:
             - name: jwt-signing-key
               mountPath: /etc/mcp/secrets
               readOnly: true
+            {{- if .Values.prompts.enabled }}
+            # Mount prompts ConfigMap (hot-reloadable)
+            - name: prompts
+              mountPath: /etc/mcp/prompts
+              readOnly: true
+            {{- end }}
 
           livenessProbe:
             httpGet:
@@ -156,6 +166,12 @@ spec:
                 path: jwt-signing-key
               - key: storage-encryption-key
                 path: storage-encryption-key
+        {{- if .Values.prompts.enabled }}
+        # Mount prompts ConfigMap
+        - name: prompts
+          configMap:
+            name: {{ include "{% endraw %}{{ chart_name }}{% raw %}.fullname" . }}-prompts
+        {{- end }}
 
       {{- with .Values.nodeSelector }}
       nodeSelector:

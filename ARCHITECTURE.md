@@ -249,7 +249,55 @@ def register_tools(mcp):
 - `@with_mcp_context` extracts user context from JWT
 - Separation allows unit testing of `_impl` functions
 
-### 7. Test Plugin Architecture
+### 7. Prompt Management Architecture
+
+Generated servers include a PromptRegistry for managing MCP prompts with versioning and hot-reload:
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                   Prompt Management                          │
+├─────────────────────────────────────────────────────────────┤
+│                                                              │
+│  ┌──────────────┐     ┌──────────────┐     ┌─────────────┐ │
+│  │  ConfigMap   │────▶│PromptRegistry│────▶│   FastMCP   │ │
+│  │ (prompts.yaml)    │  (Python)    │     │  Prompts    │ │
+│  └──────────────┘     └──────────────┘     └─────────────┘ │
+│        │                    │                               │
+│        │ Hot-reload         │ SHA256 hashing               │
+│        ▼                    ▼                               │
+│   [File Watch]         [ETag Support]                       │
+│                                                              │
+└─────────────────────────────────────────────────────────────┘
+```
+
+**Features:**
+- **Versioned bundles**: Semver versioning with SHA256 content hashing
+- **ConfigMap storage**: Prompts defined in Kubernetes ConfigMap
+- **Hot-reload**: Update prompts without server restart
+- **Pydantic validation**: Schema enforcement for prompt definitions
+- **Safety guardrails**: Detect prompt injection patterns
+
+**Bundle Manifest Format:**
+```yaml
+version: "1.0.0"
+updated_at: "2024-01-15T10:00:00Z"
+prompts:
+  - id: "example-prompt"
+    name: "Example Prompt"
+    description: "An example prompt template"
+    template: |
+      Process this request: {{ input }}
+    arguments:
+      - name: input
+        description: "User input to process"
+        required: true
+```
+
+**Admin Tools:**
+- `admin_reload_prompts`: Trigger hot-reload from ConfigMap
+- `admin_get_prompt_manifest`: Get version/hash for caching
+
+### 8. Test Plugin Architecture
 
 Tests use a plugin-based architecture for extensibility:
 
@@ -298,7 +346,8 @@ my-mcp-server/
 │   ├── auth_fastmcp.py          # FastMCP OAuth provider
 │   ├── auth_oidc.py             # Generic OIDC middleware
 │   ├── mcp_context.py           # MCPContext & with_mcp_context
-│   └── user_hash.py             # User ID utilities
+│   ├── user_hash.py             # User ID utilities
+│   └── prompt_registry.py       # Versioned prompt management
 ├── bin/                          # Utility scripts (Python only!)
 │   ├── add-user.py              # Add Auth0 users with roles
 │   ├── create-secrets.py        # Create K8s secrets from auth0-config.json

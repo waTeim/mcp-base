@@ -77,6 +77,34 @@ class TestGetPattern(TestPlugin):
                     duration_ms=(time.time() - start_time) * 1000
                 )
 
+            # Test getting the prompt-management pattern
+            prompt_result = await session.call_tool("get_pattern", arguments={
+                "name": "prompt-management"
+            })
+
+            if hasattr(prompt_result, 'content') and prompt_result.content:
+                prompt_text = prompt_result.content[0].text if prompt_result.content else ""
+            else:
+                prompt_text = str(prompt_result)
+
+            # Verify prompt-management contains critical content
+            prompt_markers = [
+                "PromptRegistry",  # Main class
+                "ConfigMap",  # Kubernetes storage
+                "hot-reload",  # Key feature
+                "version",  # Versioning support
+            ]
+
+            missing_prompt_markers = [m for m in prompt_markers if m.lower() not in prompt_text.lower()]
+            if missing_prompt_markers:
+                return TestResult(
+                    plugin_name=self.get_name(),
+                    tool_name=self.tool_name,
+                    passed=False,
+                    message=f"prompt-management pattern missing critical markers: {missing_prompt_markers}",
+                    duration_ms=(time.time() - start_time) * 1000
+                )
+
             # Test invalid pattern name
             invalid_result = await session.call_tool("get_pattern", arguments={
                 "name": "nonexistent-pattern"

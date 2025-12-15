@@ -85,7 +85,8 @@ mcp-base/
 │   ├── kubernetes-integration.md
 │   ├── helm-chart.md
 │   ├── testing.md
-│   └── deployment.md
+│   ├── deployment.md
+│   └── prompt-management.md   # Prompt versioning and hot-reload
 ├── example/cnpg-mcp/          # Reference implementation
 ├── prompts/                   # Construction prompts
 ├── Dockerfile                 # Container build
@@ -117,6 +118,7 @@ The server exposes these resources:
 - `template://server/mcp_context.py` - MCPContext and with_mcp_context
 - `template://server/user_hash.py` - User ID generation
 - `template://server/tools.py` - Tool implementation skeleton
+- `template://server/prompt_registry.py` - Versioned prompt management with hot-reload
 - `template://container/Dockerfile` - Container build
 - `template://container/requirements.txt` - Python dependencies
 - `template://helm/Chart.yaml` - Helm chart metadata
@@ -132,6 +134,7 @@ The server exposes these resources:
 - `pattern://helm-chart` - Helm chart creation
 - `pattern://testing` - Test framework patterns (includes MCP SDK type handling)
 - `pattern://deployment` - Production deployment
+- `pattern://prompt-management` - Versioned prompts with ConfigMap storage and hot-reload
 
 ## MCP Tools
 
@@ -313,11 +316,13 @@ my-mcp-server/
 ├── my_mcp_test_server.py     # Test server (OIDC)
 ├── my_mcp_tools.py            # Shared tool implementations
 │   ├── register_resources()  # MCP resource registration
+│   ├── register_prompts()    # MCP prompt registration
 │   └── register_tools()       # MCP tool registration
 ├── auth_fastmcp.py            # FastMCP OAuth provider
 ├── auth_oidc.py               # Generic OIDC authentication
 ├── mcp_context.py             # Context and decorator
 ├── user_hash.py               # User ID utilities
+├── prompt_registry.py         # Versioned prompt management
 └── test/
     └── plugins/
         ├── test_list_resources.py   # ✅ Uses str(r.uri)

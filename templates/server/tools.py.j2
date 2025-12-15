@@ -8,11 +8,13 @@ Pattern:
 1. _impl functions contain the actual logic
 2. register_tools() decorates and registers them with FastMCP
 3. with_mcp_context provides user context from JWT
+4. Prompts are loaded from prompt_registry (ConfigMap-backed with hot-reload)
 """
 
-from typing import Optional, Literal
+from typing import Optional, Literal, Dict, Any
 
 from mcp_context import MCPContext, with_mcp_context
+from prompt_registry import get_prompt_registry, reload_prompt_registry
 
 # ============================================================================
 # Constants
@@ -181,6 +183,81 @@ def register_resources(mcp):
 
 
 # ============================================================================
+# Prompt Registration
+# ============================================================================
+
+def register_prompts(mcp):
+    """
+    Register all prompts with the MCP server instance.
+
+    Prompts are loaded from the PromptRegistry which reads from a ConfigMap-backed
+    YAML file. This enables hot-reloading without server restart.
+
+    The prompt registry provides:
+    - Versioned prompt bundles with SHA256 hashing
+    - Pydantic schema validation
+    - Hot-reload via file watching
+    - ETag support for caching
+
+    Args:
+        mcp: FastMCP server instance
+    """
+    registry = get_prompt_registry()
+
+    # Register each prompt from the registry
+    for prompt_def in registry.get_all_prompts():
+        # Build arguments list for FastMCP prompt registration
+        args = []
+        for arg in prompt_def.arguments:
+            args.append({
+                "name": arg.name,
+                "description": arg.description,
+                "required": arg.required
+            })
+
+        # Create the prompt handler dynamically
+        def make_handler(prompt_id: str):
+            """Create a closure to capture prompt_id."""
+            async def handler(**kwargs) -> str:
+                rendered, error = registry.render_prompt(prompt_id, kwargs)
+                if error:
+                    return f"Error rendering prompt: {error}"
+                return rendered
+            return handler
+
+        # Register the prompt with FastMCP
+        # Note: FastMCP uses @mcp.prompt() decorator, but we can also use
+        # the underlying registration mechanism
+        mcp.prompt(
+            name=prompt_def.id,
+            description=prompt_def.description
+        )(make_handler(prompt_def.id))
+
+    # Register a special prompt for listing available prompts
+    @mcp.prompt(name="list-prompts", description="List all available prompts with their descriptions")
+    async def list_prompts_prompt() -> str:
+        """Generate a listing of all available prompts."""
+        registry = get_prompt_registry()
+        manifest = registry.get_manifest()
+
+        result = "# Available Prompts\n\n"
+        result += f"**Version:** {manifest.get('version', 'unknown')}\n"
+        result += f"**Bundle Hash:** {manifest.get('bundle_hash', 'unknown')[:24]}...\n\n"
+
+        for prompt in registry.get_all_prompts():
+            result += f"## {prompt.name} (`{prompt.id}`)\n\n"
+            result += f"{prompt.description}\n\n"
+            if prompt.arguments:
+                result += "**Arguments:**\n"
+                for arg in prompt.arguments:
+                    required = "required" if arg.required else "optional"
+                    result += f"- `{arg.name}` ({required}): {arg.description}\n"
+                result += "\n"
+
+        return result
+
+
+# ============================================================================
 # Tool Registration
 # ============================================================================
 
@@ -237,3 +314,45 @@ def register_tools(mcp):
     #         Formatted list of resources with their current status.
     #     """
     #     return await list_resources_impl(ctx, namespace, detail_level)
+
+    # -------------------------------------------------------------------------
+    # Admin Tools (for prompt management)
+    # -------------------------------------------------------------------------
+
+    @mcp.tool(name="admin_reload_prompts")
+    @with_mcp_context
+    async def admin_reload_prompts(ctx: MCPContext) -> str:
+        """
+        Reload prompts from the ConfigMap.
+
+        This tool triggers a hot-reload of prompts without requiring a server restart.
+        Use this after updating the prompts ConfigMap to apply changes immediately.
+
+        Returns:
+            Reload status with updated manifest information
+        """
+        import json
+        user_info = ctx.preferred_username or ctx.user_id or 'anonymous'
+        await ctx.ctx.info(f"User {user_info} requested prompt reload")
+
+        manifest = reload_prompt_registry()
+        return f"Prompts reloaded: {json.dumps(manifest, indent=2)}"
+
+    @mcp.tool(name="admin_get_prompt_manifest")
+    async def admin_get_prompt_manifest() -> str:
+        """
+        Get the current prompt manifest with version and hash.
+
+        Returns manifest information useful for caching and change detection:
+        - version: Semver version of the prompt bundle
+        - bundle_hash: SHA256 hash for ETag support
+        - prompt_count: Number of loaded prompts
+        - prompt_ids: List of available prompt IDs
+
+        Returns:
+            JSON manifest of the current prompt bundle
+        """
+        import json
+        registry = get_prompt_registry()
+        manifest = registry.get_manifest()
+        return json.dumps(manifest, indent=2)

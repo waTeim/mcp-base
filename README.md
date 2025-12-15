@@ -12,6 +12,7 @@ An MCP server that helps AI agents build production-ready MCP servers for Kubern
 - Plugin-based test framework
 - Docker container build
 - Kubernetes RBAC configuration
+- Versioned prompt management with ConfigMap storage and hot-reload
 
 ## Quick Start
 
@@ -71,6 +72,7 @@ Resources return template content or documentation as strings. Reading them crea
 | `pattern://fastmcp-tools` | Tool implementation patterns |
 | `pattern://authentication` | Auth0/OIDC setup guide |
 | `pattern://testing` | Test framework patterns |
+| `pattern://prompt-management` | Versioned prompts with ConfigMap and hot-reload |
 | `template://server/*` | Server code templates (as strings) |
 | `template://helm/*` | Helm chart templates (as strings) |
 | `template://container/*` | Docker build templates (as strings) |
@@ -97,7 +99,8 @@ my-server/
 │   ├── my_server_tools.py     # Shared tools & resources
 │   ├── auth_fastmcp.py        # OAuth provider
 │   ├── auth_oidc.py           # OIDC middleware
-│   └── mcp_context.py         # User context extraction
+│   ├── mcp_context.py         # User context extraction
+│   └── prompt_registry.py     # Versioned prompt management
 ├── bin/                       # Utility scripts (Python only!)
 │   ├── add-user.py           # Add Auth0 users with roles
 │   ├── create-secrets.py     # Create K8s secrets

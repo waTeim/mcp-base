@@ -49,11 +49,13 @@ class TestGenerateServerScaffold(TestPlugin):
             expected_files = [
                 "src/my_test_server_server.py",  # Entry point
                 "src/my_test_server_tools.py",   # Tools file
+                "src/prompt_registry.py",         # Prompt management
                 "Dockerfile",
                 "requirements.txt",
                 "Makefile",
                 "chart/Chart.yaml",
                 "chart/values.yaml",
+                "chart/templates/prompts-configmap.yaml",  # Prompts ConfigMap
                 "test/test-mcp.py",
                 "test/plugins/__init__.py",
                 # Bin scripts (Python only - no .sh allowed)

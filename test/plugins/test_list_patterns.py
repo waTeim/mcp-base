@@ -33,7 +33,8 @@ class TestListPatterns(TestPlugin):
                 "kubernetes-integration",
                 "helm-chart",
                 "testing",
-                "deployment"
+                "deployment",
+                "prompt-management",  # Versioned prompts with hot-reload
             ]
 
             missing_patterns = [p for p in expected_patterns if p not in text_content]

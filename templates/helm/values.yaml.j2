@@ -143,6 +143,32 @@ rbac:
 {% endfor %}
 {% endif %}
 
+# Prompt Management Configuration
+# Prompts are loaded from a ConfigMap and can be hot-reloaded
+prompts:
+  # Enable prompt management
+  enabled: true
+
+  # Prompt bundle version (semver)
+  version: "1.0.0"
+
+  # Prompt definitions
+  # Customize or replace these with your own prompts
+  definitions:
+    - id: "example-prompt"
+      name: "Example Prompt"
+      description: "An example prompt template"
+      template: |
+        This is an example prompt for {{ server_name }}.
+
+        User Input: {{"{{" }} input {{"}}"}}"
+
+        Please process this request according to the server's capabilities.
+      arguments:
+        - name: input
+          description: "User input to process"
+          required: true
+
 # Redis Configuration
 # Used for OAuth session persistence across restarts
 redis:
