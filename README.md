@@ -53,27 +53,39 @@ generate_server_scaffold(server_name="My Kubernetes Manager")
 
 ## Features
 
-### Resources
+### ⚠️ Resources vs Tools - Critical Distinction
+
+**Reading resources does NOT create files. You must call tools to generate actual source code.**
+
+- **Resources** provide read-only templates and documentation
+- **Tools** actually generate and write files to disk
+
+### Resources (Read-Only - Informational)
+
+Resources return template content or documentation as strings. Reading them creates **NO files on disk**.
 
 | URI | Description |
 |-----|-------------|
+| `pattern://generation-workflow` | **⚠️ Generation workflow (Resources vs Tools)** |
 | `pattern://architecture` | Architecture overview and design patterns |
 | `pattern://fastmcp-tools` | Tool implementation patterns |
 | `pattern://authentication` | Auth0/OIDC setup guide |
 | `pattern://testing` | Test framework patterns |
-| `template://server/*` | Server code templates |
-| `template://helm/*` | Helm chart templates |
-| `template://container/*` | Docker build templates |
+| `template://server/*` | Server code templates (as strings) |
+| `template://helm/*` | Helm chart templates (as strings) |
+| `template://container/*` | Docker build templates (as strings) |
 
-### Tools
+### Tools (File Generation)
 
-| Tool | Description |
-|------|-------------|
-| `generate_server_scaffold` | Generate complete MCP server project |
-| `render_template` | Render individual templates |
-| `list_templates` | List available templates |
-| `list_patterns` | List pattern documentation |
-| `get_pattern` | Get specific pattern docs |
+Tools actually create files and directories on disk.
+
+| Tool | Description | Creates Files? |
+|------|-------------|----------------|
+| `generate_server_scaffold` | **Generate complete MCP server project** | ✅ Yes - creates full directory structure |
+| `render_template` | Render individual template to string | ⚠️ Returns string - you must write it |
+| `list_templates` | List available templates | ❌ No |
+| `list_patterns` | List pattern documentation | ❌ No |
+| `get_pattern` | Get specific pattern docs | ❌ No |
 
 ## Generated Server Structure
 

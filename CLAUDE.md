@@ -12,6 +12,36 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - Pattern documentation for implementation guidance
 - Tools for scaffolding complete MCP server projects
 
+## ⚠️ CRITICAL: Resources vs Tools
+
+**Reading a resource does NOT create files. You must call tools to generate actual code.**
+
+### Resources (Read-Only - NO Files Created)
+- `template://server/entry_point.py` - Returns template content as a string
+- `pattern://fastmcp-tools` - Returns documentation as a string
+- Reading these provides information but **writes nothing to disk**
+
+### Tools (Actually Generate Files)
+- `generate_server_scaffold()` - **Creates entire project directory with all files**
+- `render_template()` - **Returns rendered template** (you must write it to disk)
+
+**Common Mistake**: Agents read `template://server/entry_point.py` and conclude the source file has been created. It hasn't. The resource returns template content, but no file exists on disk until you:
+1. Call `generate_server_scaffold()` to create the complete project, OR
+2. Call `render_template()` and write the output to a file yourself
+
+**Example workflow**:
+```python
+# ❌ WRONG - This only reads the template, creates NO files
+template_content = await session.read_resource("template://server/entry_point.py")
+# At this point, no files exist on disk!
+
+# ✅ CORRECT - This creates all files
+result = await session.call_tool("generate_server_scaffold", {
+    "server_name": "My MCP Server"
+})
+# Now a complete project directory exists with all source files
+```
+
 ## Project Structure
 
 ```
@@ -69,6 +99,7 @@ The server exposes these resources:
 - `template://Makefile` - Build automation
 
 ### Pattern Resources (`pattern://`)
+- `pattern://generation-workflow` - **⚠️ CRITICAL: MCP server generation workflow (Resources vs Tools)**
 - `pattern://architecture` - **Architecture overview, design patterns, and common pitfalls**
 - `pattern://fastmcp-tools` - FastMCP tool implementation
 - `pattern://authentication` - Auth0/OIDC setup
