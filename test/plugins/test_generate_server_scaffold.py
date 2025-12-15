@@ -56,6 +56,12 @@ class TestGenerateServerScaffold(TestPlugin):
                 "chart/values.yaml",
                 "test/test-mcp.py",
                 "test/plugins/__init__.py",
+                # Bin scripts (Python only - no .sh allowed)
+                "bin/add-user.py",
+                "bin/create-secrets.py",
+                "bin/make-config.py",
+                "bin/setup-auth0.py",
+                "bin/setup-rbac.py",
             ]
 
             missing_files = [f for f in expected_files if f not in text_content]

@@ -27,6 +27,7 @@ class TestListPatterns(TestPlugin):
 
             # Verify expected patterns
             expected_patterns = [
+                "generation-workflow",  # Critical: Resources vs Tools distinction
                 "fastmcp-tools",
                 "authentication",
                 "kubernetes-integration",

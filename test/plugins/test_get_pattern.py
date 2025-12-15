@@ -49,6 +49,34 @@ class TestGetPattern(TestPlugin):
                     duration_ms=(time.time() - start_time) * 1000
                 )
 
+            # Test getting the generation-workflow pattern (critical for agents)
+            workflow_result = await session.call_tool("get_pattern", arguments={
+                "name": "generation-workflow"
+            })
+
+            if hasattr(workflow_result, 'content') and workflow_result.content:
+                workflow_text = workflow_result.content[0].text if workflow_result.content else ""
+            else:
+                workflow_text = str(workflow_result)
+
+            # Verify generation-workflow contains critical content
+            workflow_markers = [
+                "Resources vs Tools",  # Critical distinction
+                "ONLY Python scripts",  # Bin scripts constraint
+                "Shell scripts (.sh) are NOT allowed",  # Explicit prohibition (exact wording)
+                "generate_server_scaffold",  # The actual tool to use
+            ]
+
+            missing_workflow_markers = [m for m in workflow_markers if m not in workflow_text]
+            if missing_workflow_markers:
+                return TestResult(
+                    plugin_name=self.get_name(),
+                    tool_name=self.tool_name,
+                    passed=False,
+                    message=f"generation-workflow pattern missing critical markers: {missing_workflow_markers}",
+                    duration_ms=(time.time() - start_time) * 1000
+                )
+
             # Test invalid pattern name
             invalid_result = await session.call_tool("get_pattern", arguments={
                 "name": "nonexistent-pattern"
