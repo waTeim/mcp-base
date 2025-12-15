@@ -118,8 +118,8 @@ async def list_templates_impl() -> str:
     result += "- `test/test_list_resources.py` - Test resource listing (as-is)\n"
     result += "- `test/test_read_resource.py` - Test resource reading (as-is)\n"
     result += "- `test/test_list_prompts.py` - Test prompt listing (as-is)\n"
-    result += "- `bin/create_secrets.py.j2` - Kubernetes secret creator\n"
-    result += "- `bin/setup_rbac.py.j2` - RBAC setup script\n"
+    result += "- `bin/create-secrets.py.j2` - Kubernetes secret creator\n"
+    result += "- `bin/setup-rbac.py.j2` - RBAC setup script\n"
     result += "- `bin/setup_auth0.py` - Auth0 tenant setup (as-is)\n"
 
     return result
@@ -138,6 +138,7 @@ async def list_patterns_impl() -> str:
     result = "# Available Patterns\n\n"
 
     patterns = [
+        ("generation-workflow", "MCP server generation workflow (Resources vs Tools)"),
         ("fastmcp-tools", "FastMCP tool implementation with MCPContext"),
         ("authentication", "Auth0/OIDC authentication setup"),
         ("kubernetes-integration", "Kubernetes API client patterns"),
@@ -168,6 +169,7 @@ async def get_pattern_impl(name: str) -> str:
         Full pattern documentation in Markdown format
     """
     valid_patterns = [
+        "generation-workflow",
         "fastmcp-tools",
         "authentication",
         "kubernetes-integration",
@@ -476,8 +478,8 @@ class TestExampleTool(TestPlugin):
     # Utility scripts
     if include_bin:
         bin_templates = [
-            ("bin/create_secrets.py.j2", "bin/create-secrets.py"),
-            ("bin/setup_rbac.py.j2", "bin/setup-rbac.py"),
+            ("bin/create-secrets.py.j2", "bin/create-secrets.py"),
+            ("bin/setup-rbac.py.j2", "bin/setup-rbac.py"),
         ]
 
         bin_static = [
@@ -607,6 +609,12 @@ def register_resources(mcp):
         return template_path.read_text()
 
     # Pattern resources
+    @mcp.resource("pattern://generation-workflow")
+    def get_generation_workflow_pattern() -> str:
+        """Pattern documentation for MCP server generation workflow (Resources vs Tools)."""
+        pattern_path = PATTERNS_DIR / "generation-workflow.md"
+        return pattern_path.read_text()
+
     @mcp.resource("pattern://fastmcp-tools")
     def get_fastmcp_tools_pattern() -> str:
         """Pattern documentation for implementing FastMCP tools."""
