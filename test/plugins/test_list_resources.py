@@ -38,6 +38,7 @@ class TestListResources(TestPlugin):
             ]
 
             expected_pattern_resources = [
+                "pattern://generation-workflow",
                 "pattern://architecture",
                 "pattern://fastmcp-tools",
                 "pattern://authentication",
