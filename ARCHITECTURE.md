@@ -299,6 +299,12 @@ my-mcp-server/
 │   ├── auth_oidc.py             # Generic OIDC middleware
 │   ├── mcp_context.py           # MCPContext & with_mcp_context
 │   └── user_hash.py             # User ID utilities
+├── bin/                          # Utility scripts (Python only!)
+│   ├── add-user.py              # Add Auth0 users with roles
+│   ├── create-secrets.py        # Create K8s secrets from auth0-config.json
+│   ├── make-config.py           # Generate config files
+│   ├── setup-auth0.py           # Configure Auth0 tenant
+│   └── setup-rbac.py            # Set up K8s RBAC resources
 ├── test/
 │   ├── plugins/
 │   │   ├── __init__.py          # Base classes
@@ -312,6 +318,23 @@ my-mcp-server/
 ├── Makefile
 └── requirements.txt
 ```
+
+### Bin Scripts Constraint
+
+**⚠️ IMPORTANT**: The `bin/` directory must contain ONLY Python scripts (`.py`). Shell scripts (`.sh`) are NOT allowed.
+
+| Script | Purpose |
+|--------|---------|
+| `add-user.py` | Add Auth0 users with assigned roles |
+| `create-secrets.py` | Create Kubernetes secrets from auth0-config.json |
+| `make-config.py` | Generate auth0-config.json and helm-values.yaml |
+| `setup-auth0.py` | Configure Auth0 tenant (applications, APIs, roles) |
+| `setup-rbac.py` | Set up Kubernetes RBAC resources |
+
+**Why Python only?**
+1. **Portability**: Works across Linux, macOS, Windows
+2. **Dependencies**: Leverages existing Python packages (kubernetes, auth0-python)
+3. **Consistency**: Same language as the MCP server
 
 ## Common Pitfalls & Solutions
 

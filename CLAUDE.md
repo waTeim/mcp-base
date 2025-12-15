@@ -42,6 +42,31 @@ result = await session.call_tool("generate_server_scaffold", {
 # Now a complete project directory exists with all source files
 ```
 
+## ⚠️ Bin Scripts Constraints
+
+**The bin/ directory must contain ONLY Python scripts (.py). Shell scripts (.sh) are NOT allowed.**
+
+### Required Bin Scripts
+
+Generated servers include these utility scripts in `bin/`:
+
+| Script | Purpose |
+|--------|---------|
+| `add-user.py` | Add Auth0 users with roles |
+| `create-secrets.py` | Create Kubernetes secrets from auth0-config.json |
+| `make-config.py` | Generate configuration files (auth0-config.json, helm-values.yaml) |
+| `setup-auth0.py` | Configure Auth0 tenant (applications, APIs, roles) |
+| `setup-rbac.py` | Set up Kubernetes RBAC resources |
+
+**Do NOT generate shell scripts** like `run-local.sh`, `test-endpoints.sh`, etc. All utility scripts must be Python.
+
+### Why Python Only?
+
+1. **Portability**: Python scripts work consistently across Linux, macOS, and Windows
+2. **Dependencies**: Can leverage existing Python packages (kubernetes, auth0-python)
+3. **Error Handling**: Better exception handling and user feedback
+4. **Consistency**: Same language as the MCP server itself
+
 ## Project Structure
 
 ```

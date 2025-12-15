@@ -118,9 +118,15 @@ async def list_templates_impl() -> str:
     result += "- `test/test_list_resources.py` - Test resource listing (as-is)\n"
     result += "- `test/test_read_resource.py` - Test resource reading (as-is)\n"
     result += "- `test/test_list_prompts.py` - Test prompt listing (as-is)\n"
-    result += "- `bin/create-secrets.py.j2` - Kubernetes secret creator\n"
+    # Bin scripts (note: only .py scripts are allowed in bin/)
+    result += "\n## Bin Scripts (Python only - NO shell scripts)\n"
+    result += "- `bin/add-user.py.j2` - Add Auth0 users with roles\n"
+    result += "- `bin/create-secrets.py.j2` - Create Kubernetes secrets\n"
+    result += "- `bin/make-config.py.j2` - Generate configuration files (auth0-config.json, helm-values.yaml)\n"
+    result += "- `bin/setup-auth0.py` - Auth0 tenant setup (as-is, static)\n"
     result += "- `bin/setup-rbac.py.j2` - RBAC setup script\n"
-    result += "- `bin/setup_auth0.py` - Auth0 tenant setup (as-is)\n"
+    result += "\n**IMPORTANT**: The bin/ directory must only contain Python scripts (.py). "
+    result += "Shell scripts (.sh) are NOT allowed.\n"
 
     return result
 
@@ -478,12 +484,14 @@ class TestExampleTool(TestPlugin):
     # Utility scripts
     if include_bin:
         bin_templates = [
+            ("bin/add-user.py.j2", "bin/add-user.py"),
             ("bin/create-secrets.py.j2", "bin/create-secrets.py"),
+            ("bin/make-config.py.j2", "bin/make-config.py"),
             ("bin/setup-rbac.py.j2", "bin/setup-rbac.py"),
         ]
 
         bin_static = [
-            ("bin/setup_auth0.py", "bin/setup-auth0.py"),
+            ("bin/setup-auth0.py", "bin/setup-auth0.py"),
         ]
 
         for template_path, output_path in bin_templates:
