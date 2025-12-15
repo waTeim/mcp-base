@@ -38,9 +38,9 @@ securityContext: {}
 
 service:
   type: ClusterIP
-  port: 8000
+  port: 4208
   # Test sidecar port (only used when testSidecar.enabled = true)
-  testPort: 8001
+  testPort: 4209
 
 ingress:
   enabled: false

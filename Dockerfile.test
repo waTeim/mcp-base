@@ -45,12 +45,12 @@ RUN useradd -m -u 1000 mcpuser && \
 USER mcpuser
 
 # Expose test server port
-EXPOSE 8001
+EXPOSE 4209
 
 # Health check endpoint
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-    CMD curl -f http://localhost:8001/healthz || exit 1
+    CMD curl -f http://localhost:4209/healthz || exit 1
 
-# Default command - run test server on port 8001
+# Default command - run test server on port 4209
 # OIDC configuration should be provided via config file at /etc/mcp/oidc.yaml
-CMD ["python", "mcp_base_test_server.py", "--port", "8001"]
+CMD ["python", "mcp_base_test_server.py", "--port", "4209"]

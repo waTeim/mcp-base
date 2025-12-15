@@ -383,6 +383,169 @@ def save_junit_results(results: List[TestResult], output_file: str):
 ./test-mcp.py --use-inspector --port-forward --namespace mcp
 ```
 
+## Testing MCP Protocol Endpoints
+
+### List Resources Test
+
+When testing `session.list_resources()`, be aware of type conversions:
+
+```python
+class TestListResources(TestPlugin):
+    """Tests the resources/list endpoint."""
+
+    tool_name = "list_resources"
+    description = "Verifies server exposes expected resources"
+
+    async def test(self, session) -> TestResult:
+        start_time = time.time()
+
+        try:
+            result = await session.list_resources()
+
+            # IMPORTANT: Convert AnyUrl objects to strings for comparison
+            # result.resources contains Resource objects with uri as AnyUrl
+            resource_uris = [str(r.uri) for r in result.resources] if hasattr(result, 'resources') else []
+
+            # Expected resource URIs (as strings)
+            expected_resources = [
+                "template://server/entry_point.py",
+                "pattern://fastmcp-tools",
+                # ... more resources
+            ]
+
+            # Check for missing resources
+            missing = [r for r in expected_resources if r not in resource_uris]
+
+            if missing:
+                return TestResult(
+                    plugin_name=self.get_name(),
+                    tool_name=self.tool_name,
+                    passed=False,
+                    message=f"Missing {len(missing)} resource(s): {missing[:3]}...",
+                    duration_ms=(time.time() - start_time) * 1000
+                )
+
+            return TestResult(
+                plugin_name=self.get_name(),
+                tool_name=self.tool_name,
+                passed=True,
+                message=f"Found all {len(expected_resources)} expected resources",
+                duration_ms=(time.time() - start_time) * 1000
+            )
+
+        except Exception as e:
+            return TestResult(
+                plugin_name=self.get_name(),
+                tool_name=self.tool_name,
+                passed=False,
+                message="Failed to list resources",
+                error=str(e),
+                duration_ms=(time.time() - start_time) * 1000
+            )
+```
+
+**Critical Detail**: The `result.resources` list contains `Resource` objects where `uri` is an `AnyUrl` type from Pydantic. You must convert to string using `str(r.uri)` before comparing with string URIs, otherwise comparisons will always fail.
+
+### Read Resource Test
+
+When testing `session.read_resource()`, verify content structure:
+
+```python
+class TestReadResource(TestPlugin):
+    """Tests reading a resource."""
+
+    tool_name = "read_resource"
+    description = "Verifies reading resources"
+    depends_on = ["TestListResources"]
+
+    async def test(self, session) -> TestResult:
+        start_time = time.time()
+
+        try:
+            result = await session.read_resource(uri="template://server/entry_point.py")
+
+            # Extract text content from ReadResourceResult
+            if hasattr(result, 'contents') and result.contents:
+                text_content = result.contents[0].text if result.contents else ""
+            else:
+                text_content = str(result)
+
+            # Verify expected content markers
+            expected_markers = [
+                "#!/usr/bin/env python3",
+                "FastMCP",
+                "def main():",
+            ]
+
+            missing = [m for m in expected_markers if m not in text_content]
+
+            if missing:
+                return TestResult(
+                    plugin_name=self.get_name(),
+                    tool_name=self.tool_name,
+                    passed=False,
+                    message=f"Resource missing expected content: {missing}",
+                    duration_ms=(time.time() - start_time) * 1000
+                )
+
+            return TestResult(
+                plugin_name=self.get_name(),
+                tool_name=self.tool_name,
+                passed=True,
+                message=f"Successfully read resource ({len(text_content)} bytes)",
+                duration_ms=(time.time() - start_time) * 1000
+            )
+
+        except Exception as e:
+            return TestResult(
+                plugin_name=self.get_name(),
+                tool_name=self.tool_name,
+                passed=False,
+                message="Failed to read resource",
+                error=str(e),
+                duration_ms=(time.time() - start_time) * 1000
+            )
+```
+
+### List Prompts Test
+
+```python
+class TestListPrompts(TestPlugin):
+    """Tests the prompts/list endpoint."""
+
+    tool_name = "list_prompts"
+    description = "Verifies prompts/list works"
+
+    async def test(self, session) -> TestResult:
+        start_time = time.time()
+
+        try:
+            result = await session.list_prompts()
+
+            # Get list of prompts
+            prompts = result.prompts if hasattr(result, 'prompts') else []
+
+            # Validate expected prompts if your server defines any
+            # If no prompts defined, just verify the endpoint works
+            return TestResult(
+                plugin_name=self.get_name(),
+                tool_name=self.tool_name,
+                passed=True,
+                message=f"Prompts list returned successfully ({len(prompts)} prompts)",
+                duration_ms=(time.time() - start_time) * 1000
+            )
+
+        except Exception as e:
+            return TestResult(
+                plugin_name=self.get_name(),
+                tool_name=self.tool_name,
+                passed=False,
+                message="Failed to list prompts",
+                error=str(e),
+                duration_ms=(time.time() - start_time) * 1000
+            )
+```
+
 ## Best Practices
 
 1. **One plugin per tool** - Keep tests focused
@@ -392,3 +555,6 @@ def save_junit_results(results: List[TestResult], output_file: str):
 5. **Support multiple outputs** - JSON for scripts, JUnit for CI
 6. **Use auth proxy** - Simplifies authenticated testing
 7. **Test error cases** - Verify error handling works
+8. **Convert Pydantic types** - Use `str()` for AnyUrl when comparing URIs
+9. **Match actual content** - Test expectations must match actual file content exactly
+10. **Test MCP protocol endpoints** - Always test list_resources, read_resource, and list_prompts
