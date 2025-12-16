@@ -19,7 +19,7 @@ Every generated MCP server includes two entry points serving different purposes:
 │                                                              │
 │  ┌─────────────────────┐    ┌─────────────────────┐        │
 │  │   Main Server       │    │   Test Server       │        │
-│  │   (port 8000)       │    │   (port 8001)       │        │
+│  │   (port 4207)       │    │   (port 8001)       │        │
 │  │                     │    │                     │        │
 │  │  FastMCP OAuth      │    │  Direct OIDC        │        │
 │  │  Issues MCP tokens  │    │  Auth0 JWT tokens   │        │

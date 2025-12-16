@@ -45,13 +45,13 @@ USER appuser
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-    CMD curl -f http://localhost:8000/health || exit 1
+    CMD curl -f http://localhost:4207/health || exit 1
 
 # Expose port
-EXPOSE 8000
+EXPOSE 4207
 
 # Run server
-CMD ["python", "src/server.py", "--transport", "http", "--port", "8000"]
+CMD ["python", "src/server.py", "--transport", "http", "--port", "4207"]
 ```
 
 ### Multi-stage Build (for smaller images)
@@ -77,8 +77,8 @@ COPY --from=builder /build/deps /usr/local/lib/python3.11/site-packages/
 COPY src/ ./src/
 
 USER appuser
-EXPOSE 8000
-CMD ["python", "src/server.py", "--transport", "http", "--port", "8000"]
+EXPOSE 4207
+CMD ["python", "src/server.py", "--transport", "http", "--port", "4207"]
 ```
 
 ## Build Automation (Makefile)
@@ -262,7 +262,7 @@ spec:
     metadata:
       annotations:
         prometheus.io/scrape: "true"
-        prometheus.io/port: "8000"
+        prometheus.io/port: "4207"
         prometheus.io/path: "/metrics"
 ```
 
@@ -295,7 +295,7 @@ kubectl logs -n mcp -l app.kubernetes.io/name=mcp-server --tail=100 -f
 ### Port Forward for Local Testing
 
 ```bash
-kubectl port-forward -n mcp svc/mcp-server 8000:8000
+kubectl port-forward -n mcp svc/mcp-server 4207:4207
 ```
 
 ### Scale Manually

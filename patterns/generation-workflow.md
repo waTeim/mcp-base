@@ -43,7 +43,7 @@ Generate a complete, ready-to-deploy MCP server project:
 # 1. Call generate_server_scaffold
 result = await session.call_tool("generate_server_scaffold", {
     "server_name": "My Kubernetes Manager",
-    "port": 8000,
+    "port": 4207,
     "default_namespace": "default",
     "operator_cluster_roles": "cluster-admin",
     "include_helm": True,
@@ -92,7 +92,7 @@ For more control, render individual templates:
 entry_point = await session.call_tool("render_template", {
     "template_path": "server/entry_point.py.j2",
     "server_name": "My Kubernetes Manager",
-    "port": 8000,
+    "port": 4207,
     "default_namespace": "default"
 })
 

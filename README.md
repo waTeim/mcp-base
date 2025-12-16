@@ -25,7 +25,7 @@ cd mcp-base
 pip install -r requirements.txt
 
 # Start server
-python src/mcp_base_server.py --port 8000
+python src/mcp_base_server.py --port 4207
 ```
 
 ### 2. Connect with Claude Desktop
@@ -36,7 +36,7 @@ Add to `~/.config/claude/claude_desktop_config.json`:
 {
   "mcpServers": {
     "mcp-base": {
-      "url": "http://localhost:8000/mcp"
+      "url": "http://localhost:4207/mcp"
     }
   }
 }
@@ -136,7 +136,7 @@ my-server/
 ```python
 generate_server_scaffold(
     server_name="My MCP Server",      # Required: Human-readable name
-    port=8000,                         # HTTP port (default: 8000)
+    port=4207,                         # HTTP port (default: 4207)
     default_namespace="default",       # K8s namespace (default: "default")
     operator_cluster_roles="role1,role2",  # ClusterRoles to bind
     include_helm=True,                 # Include Helm chart
@@ -152,7 +152,7 @@ generate_server_scaffold(
 render_template(
     template_path="server/entry_point.py.j2",
     server_name="My Server",
-    port=8000,
+    port=4207,
     default_namespace="default"
 )
 ```
@@ -163,17 +163,17 @@ render_template(
 
 ```bash
 # Main server (OAuth)
-python src/mcp_base_server.py --port 8000
+python src/mcp_base_server.py --port 4207
 
 # Health check
-curl http://localhost:8000/healthz
+curl http://localhost:4207/healthz
 ```
 
 ### Docker
 
 ```bash
 docker build -t mcp-base .
-docker run -p 8000:8000 mcp-base
+docker run -p 4207:4207 mcp-base
 ```
 
 ### Kubernetes with Helm

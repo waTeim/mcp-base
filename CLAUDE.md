@@ -100,11 +100,11 @@ mcp-base/
 pip install -r requirements.txt
 
 # Run server (HTTP transport)
-python src/mcp_base_server.py --port 8000
+python src/mcp_base_server.py --port 4207
 
 # Build and run container
 docker build -t mcp-base .
-docker run -p 8000:8000 mcp-base
+docker run -p 4207:4207 mcp-base
 ```
 
 ## MCP Resources
@@ -151,7 +151,7 @@ Retrieves full pattern documentation by name.
 Renders a single template with parameters:
 - `template_path`: Path to template (e.g., "server/entry_point.py.j2")
 - `server_name`: Human-readable server name
-- `port`: HTTP port (default: 8000)
+- `port`: HTTP port (default: 4207)
 - `default_namespace`: K8s namespace (default: "default")
 - `chart_name`: Helm chart name (defaults from server_name)
 - `operator_cluster_roles`: Comma-separated ClusterRoles to bind
@@ -193,7 +193,7 @@ pattern = await mcp.call_tool("get_pattern", {"name": "fastmcp-tools"})
 # 3. Generate complete project
 scaffold = await mcp.call_tool("generate_server_scaffold", {
     "server_name": "CloudNativePG MCP",
-    "port": 8000,
+    "port": 4207,
     "operator_cluster_roles": "cnpg-cloudnative-pg-edit"
 })
 
@@ -291,7 +291,7 @@ Always check for attribute existence using `hasattr()` for defensive coding.
 ### Test Authentication
 Generated servers support two auth modes:
 
-1. **Main Server** (port 8000): FastMCP OAuth proxy issuing MCP tokens
+1. **Main Server** (port 4207): FastMCP OAuth proxy issuing MCP tokens
    - Uses Auth0 for authentication
    - Issues its own MCP tokens for client access
    - Session tokens stored in Redis
