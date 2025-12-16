@@ -200,7 +200,7 @@ async def get_pattern_impl(name: str) -> str:
 async def render_template_impl(
     template_path: str,
     server_name: str,
-    port: int = 8000,
+    port: int = 4207,
     default_namespace: str = "default",
     chart_name: Optional[str] = None,
     operator_cluster_roles: Optional[str] = None,
@@ -214,8 +214,8 @@ async def render_template_impl(
 
     Args:
         template_path: Path to template (e.g., "server/entry_point.py.j2")
-        server_name: Human-readable server name (e.g., "CloudNativePG MCP")
-        port: HTTP server port (default: 8000)
+        server_name: Human-readable server name (e.g., "Kubernetes Manager MCP")
+        port: HTTP server port (default: 4207)
         default_namespace: Default Kubernetes namespace (default: "default")
         chart_name: Helm chart name (defaults to kebab-case of server_name)
         operator_cluster_roles: Comma-separated list of ClusterRoles to bind
@@ -269,7 +269,7 @@ async def render_template_impl(
 async def generate_server_scaffold_impl(
     server_name: str,
     output_description: Literal["full", "summary"] = "summary",
-    port: int = 8000,
+    port: int = 4207,
     default_namespace: str = "default",
     operator_cluster_roles: Optional[str] = None,
     include_helm: bool = True,
@@ -282,12 +282,15 @@ async def generate_server_scaffold_impl(
     Creates a full project structure with all necessary files for
     a production-ready Kubernetes MCP server.
 
+    IMPORTANT: Use default parameter values unless the user explicitly specifies otherwise.
+    Do not override include_helm, include_test, or include_bin unless explicitly requested.
+
     Args:
-        server_name: Human-readable server name (e.g., "CloudNativePG MCP")
+        server_name: Human-readable server name (e.g., "Kubernetes Manager MCP")
         output_description: "full" for all file contents, "summary" for file list only
-        port: HTTP server port (default: 8000)
+        port: HTTP server port (default: 4207)
         default_namespace: Default Kubernetes namespace
-        operator_cluster_roles: Comma-separated ClusterRoles to bind (e.g., "cnpg-edit,strimzi-edit")
+        operator_cluster_roles: Comma-separated ClusterRoles to bind (e.g., "my-operator-edit,other-operator-view")
         include_helm: Include Helm chart (default: True)
         include_test: Include test framework (default: True)
         include_bin: Include utility scripts (default: True)
@@ -296,8 +299,8 @@ async def generate_server_scaffold_impl(
         Generated project structure and file contents (or summary)
 
     Examples:
-        - Basic: generate_server_scaffold(server_name="My MCP Server")
-        - With roles: generate_server_scaffold(server_name="CNPG MCP", operator_cluster_roles="cnpg-edit")
+        - Basic: generate_server_scaffold(server_name="Kubernetes Manager MCP")
+        - With roles: generate_server_scaffold(server_name="Kubernetes Manager MCP", operator_cluster_roles="my-operator-edit")
     """
     # Derive names
     server_name_snake = to_snake_case(server_name)
@@ -717,7 +720,7 @@ def register_tools(mcp):
     async def render_template(
         template_path: str,
         server_name: str,
-        port: int = 8000,
+        port: int = 4207,
         default_namespace: str = "default",
         chart_name: Optional[str] = None,
         operator_cluster_roles: Optional[str] = None,
@@ -738,7 +741,7 @@ def register_tools(mcp):
     async def generate_server_scaffold(
         server_name: str,
         output_description: Literal["full", "summary"] = "summary",
-        port: int = 8000,
+        port: int = 4207,
         default_namespace: str = "default",
         operator_cluster_roles: Optional[str] = None,
         include_helm: bool = True,

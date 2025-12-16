@@ -18,14 +18,10 @@ class TestGenerateServerScaffold(TestPlugin):
 
         try:
             # Test generating a server scaffold (summary mode)
+            # Use defaults to ensure the tool behaves correctly without explicit parameters
             result = await session.call_tool("generate_server_scaffold", arguments={
                 "server_name": "My Test Server",
-                "output_description": "summary",
-                "port": 8080,
-                "default_namespace": "my-test-ns",
-                "include_helm": True,
-                "include_test": True,
-                "include_bin": True
+                "output_description": "summary"
             })
 
             # Extract text content from response
