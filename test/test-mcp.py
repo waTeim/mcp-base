@@ -179,21 +179,29 @@ class LoggingSessionWrapper:
             raise
 
     async def call_tool(self, *args, **kwargs):
+        # Extract tool name for better logging
+        tool_name = kwargs.get('name') or (args[0] if args else 'unknown')
+        method_desc = f"call_tool({tool_name})"
+
         try:
             result = await self._session.call_tool(*args, **kwargs)
-            self._log_call("call_tool", args, kwargs, result=result)
+            self._log_call(method_desc, args, kwargs, result=result)
             return result
         except Exception as e:
-            self._log_call("call_tool", args, kwargs, error=e)
+            self._log_call(method_desc, args, kwargs, error=e)
             raise
 
     async def read_resource(self, *args, **kwargs):
+        # Extract resource URI for better logging
+        resource_uri = kwargs.get('uri') or (args[0] if args else 'unknown')
+        method_desc = f"read_resource({resource_uri})"
+
         try:
             result = await self._session.read_resource(*args, **kwargs)
-            self._log_call("read_resource", args, kwargs, result=result)
+            self._log_call(method_desc, args, kwargs, result=result)
             return result
         except Exception as e:
-            self._log_call("read_resource", args, kwargs, error=e)
+            self._log_call(method_desc, args, kwargs, error=e)
             raise
 
     def __getattr__(self, name):
