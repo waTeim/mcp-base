@@ -652,16 +652,25 @@ Environment Variables:
         dest='debug_log',
         help='Save detailed request/response log for debugging (e.g., /tmp/mcp-debug.log)'
     )
+    parser.add_argument(
+        '--no-auth',
+        action='store_true',
+        help='Skip authentication (for testing against no-auth servers)'
+    )
 
     args = parser.parse_args()
 
     # Get authentication token with priority:
-    # 1. Token file via --token-file
-    # 2. Auto-obtain from auth0-config.json
+    # 1. --no-auth flag skips all authentication
+    # 2. Token file via --token-file
+    # 3. Auto-obtain from auth0-config.json
     auth_token = None
     token_source = None
 
-    if args.token_file:
+    if args.no_auth:
+        print(Colors.yellow("⚠️  Running without authentication (--no-auth)"))
+        print()
+    elif args.token_file:
         token_path = Path(args.token_file)
         if not token_path.exists():
             print(Colors.red(f"❌ Token file not found: {args.token_file}"))
