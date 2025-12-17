@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-{{ server_name }} MCP Test Server (OIDC Auth)
+{{ server_name }} MCP Test Server (OIDC Auth or No-Auth Mode)
 
-Test endpoint for the {{ server_name }} MCP server using standard OIDC authentication.
-This server accepts Auth0 JWT tokens directly (no MCP token issuance).
+Test endpoint for the {{ server_name }} MCP server using standard OIDC authentication
+or no-auth mode for development/testing.
 
 This is deployed as a sidecar container alongside the main FastMCP OAuth server,
 allowing both authentication methods to coexist:
@@ -11,6 +11,12 @@ allowing both authentication methods to coexist:
 - Test server (port {{ port + 1 }}): Standard OIDC accepting Auth0 JWT tokens
 
 Both servers share the same tool implementations from {{ server_name_snake }}_tools.py.
+
+No-Auth Mode:
+  For development and testing without authentication:
+    python {{ server_name_snake }}_test_server.py --no-auth --port {{ port + 1 }}
+
+  This injects a mock user identity for tools that require user context.
 """
 
 import argparse
@@ -27,6 +33,8 @@ from fastmcp import FastMCP, Context
 import uvicorn
 from starlette.routing import Route
 from starlette.responses import JSONResponse
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.requests import Request
 
 # Import shared tools and resources registration
 from {{ server_name_snake }}_tools import register_tools, register_resources
@@ -89,13 +97,64 @@ async def readiness_check(request):
 
 
 # ============================================================================
+# No-Auth Middleware (for development/testing)
+# ============================================================================
+
+class NoAuthMiddleware(BaseHTTPMiddleware):
+    """
+    Middleware that injects mock user claims for no-auth testing mode.
+
+    This allows testing MCP server functionality without requiring
+    actual OIDC authentication. The identity is provided via command-line.
+    """
+
+    def __init__(self, app, identity: str, exclude_paths: list = None):
+        """
+        Initialize NoAuth middleware.
+
+        Args:
+            app: Starlette application
+            identity: Mock user identity to inject
+            exclude_paths: Paths to skip (health checks)
+        """
+        super().__init__(app)
+        self.identity = identity
+        self.exclude_paths = exclude_paths or ["/healthz", "/readyz"]
+
+        # Create mock claims that mimic OIDC token structure
+        self.mock_claims = {
+            'sub': identity,
+            'preferred_username': identity,
+            'name': identity,
+            'email': f'{identity}@test.local',
+            'iss': 'http://localhost/no-auth',
+            'aud': 'mcp-test',
+            'scope': 'openid profile email',
+        }
+
+    async def dispatch(self, request: Request, call_next):
+        """Inject mock claims into all requests."""
+        # Skip for health checks
+        for excluded in self.exclude_paths:
+            if request.url.path.startswith(excluded):
+                return await call_next(request)
+
+        # Inject mock claims into request state
+        request.state.auth_claims = self.mock_claims
+        request.state.user_id = self.identity
+        request.state.claims = self.mock_claims  # For user_hash.py
+
+        return await call_next(request)
+
+
+# ============================================================================
 # Main Entry Point
 # ============================================================================
 
 def main():
     """Main entry point for the test server."""
     parser = argparse.ArgumentParser(
-        description="{{ server_name }} MCP Test Server (OIDC Auth)"
+        description="{{ server_name }} MCP Test Server (OIDC Auth or No-Auth mode)"
     )
     parser.add_argument(
         "--port",
@@ -108,33 +167,58 @@ def main():
         default="0.0.0.0",
         help="Host to bind to (default: 0.0.0.0)"
     )
+    parser.add_argument(
+        "--no-auth",
+        action="store_true",
+        help="Disable authentication (for testing without credentials)"
+    )
+    parser.add_argument(
+        "--identity",
+        default="test-user",
+        help="Mock user identity when using --no-auth (default: test-user)"
+    )
 
     args = parser.parse_args()
 
+    # Determine auth mode
+    auth_mode = "No-Auth" if args.no_auth else "OIDC"
+
     logger.info("=" * 70)
-    logger.info("{{ server_name }} MCP Test Server (OIDC Auth)")
+    logger.info(f"{{ server_name }} MCP Test Server ({auth_mode})")
     logger.info("=" * 70)
     logger.info(f"Listening on: {args.host}:{args.port}")
     logger.info(f"Endpoint: /test")
-    logger.info(f"Auth: Standard OIDC (Auth0 JWT tokens)")
+    if args.no_auth:
+        logger.info(f"Auth: DISABLED (no-auth mode)")
+        logger.info(f"Identity: {args.identity}")
+    else:
+        logger.info(f"Auth: Standard OIDC (Auth0 JWT tokens)")
     logger.info("=" * 70)
-
-    # Create OIDC auth provider
-    logger.info("Initializing OIDC authentication...")
-    oidc_provider = OIDCAuthProvider()
-    logger.info(f"   Issuer: {oidc_provider.issuer}")
-    logger.info(f"   Audience: {oidc_provider.audience}")
 
     # Create FastMCP HTTP app
     app = mcp.http_app(path="/test")
 
-    # Add OIDC middleware
-    logger.info("Adding OIDC authentication middleware...")
-    app.add_middleware(
-        OIDCAuthMiddleware,
-        auth_provider=oidc_provider,
-        exclude_paths=["/healthz", "/readyz"]
-    )
+    # Add authentication middleware based on mode
+    if args.no_auth:
+        logger.info(f"Adding NoAuth middleware (identity: {args.identity})...")
+        app.add_middleware(
+            NoAuthMiddleware,
+            identity=args.identity,
+            exclude_paths=["/healthz", "/readyz"]
+        )
+    else:
+        # Create OIDC auth provider
+        logger.info("Initializing OIDC authentication...")
+        oidc_provider = OIDCAuthProvider()
+        logger.info(f"   Issuer: {oidc_provider.issuer}")
+        logger.info(f"   Audience: {oidc_provider.audience}")
+
+        logger.info("Adding OIDC authentication middleware...")
+        app.add_middleware(
+            OIDCAuthMiddleware,
+            auth_provider=oidc_provider,
+            exclude_paths=["/healthz", "/readyz"]
+        )
 
     # Add health check routes
     app.add_route("/healthz", liveness_check)
@@ -142,11 +226,15 @@ def main():
 
     logger.info("✅ Test server ready")
     logger.info("")
-    logger.info("To test with Auth0 JWT token:")
-    logger.info("  1. Get token: ./test/get-user-token.py")
-    logger.info("  2. Test: ./test/test-mcp.py --transport http \\")
-    logger.info(f"           --url http://localhost:{args.port}/test \\")
-    logger.info("           --token-file /tmp/user-token.txt")
+    if args.no_auth:
+        logger.info("To test (no authentication required):")
+        logger.info(f"  ./test/test-mcp.py --url http://localhost:{args.port}/test --no-auth")
+    else:
+        logger.info("To test with Auth0 JWT token:")
+        logger.info("  1. Get token: ./test/get-user-token.py")
+        logger.info("  2. Test: ./test/test-mcp.py --transport http \\")
+        logger.info(f"           --url http://localhost:{args.port}/test \\")
+        logger.info("           --token-file /tmp/user-token.txt")
     logger.info("")
 
     # Add health check filter to uvicorn access logger
