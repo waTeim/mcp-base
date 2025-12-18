@@ -197,6 +197,27 @@ dev-start-stdio: ## Start server in stdio mode (local development)
 	@echo "Starting server in stdio mode..."
 	python src/mcp_base_server.py --transport stdio
 
+.PHONY: dev-local
+dev-local: ## Start test server in no-auth mode (local development)
+	@echo "Starting test server in no-auth mode..."
+	@echo "URL: http://localhost:8001/test"
+	@echo "Health: http://localhost:8001/healthz"
+	@echo ""
+	python src/mcp_base_test_server.py --no-auth --port 8001
+
+.PHONY: dev-test
+dev-test: ## Run tests against local no-auth server
+	@echo "Running tests against local no-auth server..."
+	python test/test-mcp.py --url http://localhost:8001/test --no-auth
+
+.PHONY: dev-test-debug
+dev-test-debug: ## Run tests with debug logging against local no-auth server
+	@echo "Running tests with debug logging..."
+	python test/test-mcp.py --url http://localhost:8001/test --no-auth \
+		--debug-log /tmp/mcp-debug.log
+	@echo ""
+	@echo "Debug log saved to: /tmp/mcp-debug.log"
+
 #
 # Kubernetes development targets
 #
@@ -258,25 +279,38 @@ help: ## Show this help message
 	@echo ""
 	@echo "Usage: make [target]"
 	@echo ""
-	@echo "Configuration:"
-	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | grep -E '^(config|config-show):' | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-20s\033[0m %s\n", $$1, $$2}'
+	@echo "Development (Local No-Auth):"
+	@echo "  dev-local            Start test server in no-auth mode"
+	@echo "  dev-test             Run tests against local no-auth server"
+	@echo "  dev-test-debug       Run tests with debug logging"
+	@echo "  dev-start-http       Start server in HTTP mode"
+	@echo "  dev-start-stdio      Start server in stdio mode"
 	@echo ""
 	@echo "Container Build:"
-	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | grep -E '^(build|build-test|build-all|build-no-cache|build-test-no-cache|push|push-test|push-all|build-push|test-image|test-image-test):' | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-20s\033[0m %s\n", $$1, $$2}'
+	@echo "  build                Build main container image"
+	@echo "  build-test           Build test server image"
+	@echo "  build-all            Build both images"
+	@echo "  push                 Push main image to registry"
+	@echo "  push-all             Push both images to registry"
 	@echo ""
 	@echo "Helm Chart:"
-	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | grep -E '^helm-' | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-20s\033[0m %s\n", $$1, $$2}'
-	@echo ""
-	@echo "Development:"
-	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | grep -E '^dev-' | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-20s\033[0m %s\n", $$1, $$2}'
+	@echo "  helm-lint            Lint Helm chart"
+	@echo "  helm-template        Render chart templates"
+	@echo "  helm-install         Install to Kubernetes"
+	@echo "  helm-upgrade         Upgrade release"
+	@echo "  helm-uninstall       Uninstall release"
 	@echo ""
 	@echo "Kubernetes:"
-	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | grep -E '^k8s-' | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-20s\033[0m %s\n", $$1, $$2}'
-	@echo ""
-	@echo "Utility:"
-	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | grep -E '^(clean|help):' | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-20s\033[0m %s\n", $$1, $$2}'
+	@echo "  k8s-logs             Show logs from deployed pods"
+	@echo "  k8s-pods             Show deployed pods"
+	@echo "  k8s-port-forward     Port forward to service"
+	@echo "  k8s-shell            Open shell in pod"
 	@echo ""
 	@echo "Quick Start:"
+	@echo "  1. make dev-local       # Start no-auth server"
+	@echo "  2. make dev-test        # Run tests"
+	@echo ""
+	@echo "Production:"
 	@echo "  1. make config          # Generate configuration"
 	@echo "  2. Edit make.env        # Customize settings"
 	@echo "  3. make build-all       # Build both images"

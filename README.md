@@ -225,6 +225,65 @@ python bin/setup-auth0.py --token YOUR_MANAGEMENT_API_TOKEN
     --output results.xml --format junit
 ```
 
+## Development Mode (No-Auth)
+
+For rapid development, debugging, and testing new features without authentication overhead, both mcp-base and generated servers support a **no-auth mode**.
+
+### When to Use No-Auth Mode
+
+- **Adding new features** - Test new tools/resources without auth setup
+- **Debugging issues** - Isolate problems from authentication concerns
+- **CI/CD pipelines** - Run automated tests without credentials
+- **Local development** - Quick iteration without browser auth flow
+- **AI agent testing** - Allow AI assistants to test changes directly
+
+### Starting the Server (No-Auth)
+
+```bash
+# mcp-base test server
+python src/mcp_base_test_server.py --no-auth --port 8001
+
+# With custom identity (for user-specific testing)
+python src/mcp_base_test_server.py --no-auth --identity "dev-user" --port 8001
+```
+
+### Running Tests (No-Auth)
+
+```bash
+# Test against no-auth server
+./test/test-mcp.py --url http://localhost:8001/test --no-auth
+
+# With debug logging for troubleshooting
+./test/test-mcp.py --url http://localhost:8001/test --no-auth \
+    --debug-log /tmp/mcp-debug.log
+```
+
+### How No-Auth Mode Works
+
+1. **Server side**: `NoAuthMiddleware` replaces OIDC middleware and injects mock user claims
+2. **Test runner**: `--no-auth` flag skips token acquisition
+3. **Identity preserved**: Tools that need user context still receive a mock identity
+
+Mock claims provided:
+- `sub`, `preferred_username`, `name` → identity value (default: "test-user")
+- `email` → `{identity}@test.local`
+- `iss` → `http://localhost/no-auth`
+- `scope` → `openid profile email`
+
+### Debug Logging
+
+For diagnosing test failures, enable debug logging:
+
+```bash
+./test/test-mcp.py --url http://localhost:8001/test --no-auth \
+    --debug-log /tmp/mcp-debug.log
+
+# View the detailed request/response log
+cat /tmp/mcp-debug.log
+```
+
+The debug log captures all MCP protocol interactions with full request arguments and response data.
+
 ## Architecture
 
 See [ARCHITECTURE.md](ARCHITECTURE.md) for detailed documentation on:
