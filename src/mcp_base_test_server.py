@@ -98,60 +98,7 @@ logger.info("✅ Resources and tools registered with test MCP server")
 # MCP Protocol Logging Middleware
 # ============================================================================
 
-def add_mcp_logging():
-    """Add detailed logging for MCP protocol operations."""
-
-    # Wrap at the resource_manager level
-    original_get_resources = mcp._resource_manager.get_resources
-    async def logged_get_resources():
-        logger.info("📋 MCP: get_resources called on resource_manager")
-        logger.info(f"   Internal state: {len(mcp._resource_manager._resources)} resources in _resources dict")
-        result = await original_get_resources()
-        logger.info(f"   → Type of result: {type(result)}")
-
-        # Get actual resource objects (dict values, not keys!)
-        if isinstance(result, dict):
-            result_list = list(result.values())
-            logger.info(f"   → Dict with {len(result_list)} resource objects")
-            for i, r in enumerate(result_list[:3]):
-                logger.info(f"      [{i}] Type: {type(r)}")
-                if hasattr(r, 'uri'):
-                    logger.info(f"           URI: {r.uri}")
-                if hasattr(r, 'name'):
-                    logger.info(f"           Name: {r.name}")
-            if len(result_list) > 3:
-                logger.info(f"      ... and {len(result_list) - 3} more")
-        else:
-            logger.info(f"   → Returning {len(result)} resources (not a dict)")
-
-        return result
-    mcp._resource_manager.get_resources = logged_get_resources
-
-    # Also wrap the FastMCP _list_resources handler
-    original_list_resources_handler = mcp._list_resources
-    async def logged_list_resources_handler(context):
-        logger.info("🔍 MCP: _list_resources (middleware) called")
-        result = await original_list_resources_handler(context)
-        logger.info(f"   → Result type: {type(result)}")
-        logger.info(f"   → Result length: {len(result)}")
-        return result
-    mcp._list_resources = logged_list_resources_handler
-
-    # Wrap the MCP protocol handler that returns MCPResource objects
-    original_list_resources_mcp = mcp._list_resources_mcp
-    async def logged_list_resources_mcp():
-        logger.info("🔍 MCP: _list_resources_mcp (protocol) called")
-        result = await original_list_resources_mcp()
-        logger.info(f"   → MCP protocol result type: {type(result)}")
-        logger.info(f"   → MCP protocol result length: {len(result)}")
-        if len(result) > 0:
-            logger.info(f"   → First item type: {type(result[0])}")
-            logger.info(f"   → First item: {result[0]}")
-        return result
-    mcp._list_resources_mcp = logged_list_resources_mcp
-
-add_mcp_logging()
-logger.info("✅ MCP protocol logging enabled")
+# MCP protocol logging removed - using RequestLoggingMiddleware instead
 
 # ============================================================================
 # Health Check Endpoints
@@ -171,10 +118,57 @@ async def readiness_check(request):
 # Main Entry Point
 # ============================================================================
 
+class NoAuthMiddleware(BaseHTTPMiddleware):
+    """
+    Middleware that injects mock user claims for no-auth testing mode.
+
+    This allows testing MCP server functionality without requiring
+    actual OIDC authentication. The identity is provided via command-line.
+    """
+
+    def __init__(self, app, identity: str, exclude_paths: list = None):
+        """
+        Initialize NoAuth middleware.
+
+        Args:
+            app: Starlette application
+            identity: Mock user identity to inject
+            exclude_paths: Paths to skip (health checks)
+        """
+        super().__init__(app)
+        self.identity = identity
+        self.exclude_paths = exclude_paths or ["/healthz", "/readyz"]
+
+        # Create mock claims that mimic OIDC token structure
+        self.mock_claims = {
+            'sub': identity,
+            'preferred_username': identity,
+            'name': identity,
+            'email': f'{identity}@test.local',
+            'iss': 'http://localhost/no-auth',
+            'aud': 'mcp-test',
+            'scope': 'openid profile email',
+        }
+
+    async def dispatch(self, request: Request, call_next):
+        """Inject mock claims into all requests."""
+        # Skip for health checks
+        for excluded in self.exclude_paths:
+            if request.url.path.startswith(excluded):
+                return await call_next(request)
+
+        # Inject mock claims into request state
+        request.state.auth_claims = self.mock_claims
+        request.state.user_id = self.identity
+        request.state.claims = self.mock_claims  # For user_hash.py
+
+        return await call_next(request)
+
+
 def main():
     """Main entry point for the test server."""
     parser = argparse.ArgumentParser(
-        description="MCP Base MCP Test Server (OIDC Auth)"
+        description="MCP Base MCP Test Server (OIDC Auth or No-Auth mode)"
     )
     parser.add_argument(
         "--port",
@@ -187,34 +181,46 @@ def main():
         default="0.0.0.0",
         help="Host to bind to (default: 0.0.0.0)"
     )
+    parser.add_argument(
+        "--no-auth",
+        action="store_true",
+        help="Disable authentication (for testing without credentials)"
+    )
+    parser.add_argument(
+        "--identity",
+        default="test-user",
+        help="Mock user identity when using --no-auth (default: test-user)"
+    )
 
     args = parser.parse_args()
 
+    # Determine auth mode
+    auth_mode = "No-Auth" if args.no_auth else "OIDC"
+
     logger.info("=" * 70)
-    logger.info("MCP Base MCP Test Server (OIDC Auth)")
+    logger.info(f"MCP Base MCP Test Server ({auth_mode})")
     logger.info("=" * 70)
     logger.info(f"Listening on: {args.host}:{args.port}")
     logger.info(f"Endpoint: /test")
-    logger.info(f"Auth: Standard OIDC (Auth0 JWT tokens)")
+    if args.no_auth:
+        logger.info(f"Auth: DISABLED (no-auth mode)")
+        logger.info(f"Identity: {args.identity}")
+    else:
+        logger.info(f"Auth: Standard OIDC (Auth0 JWT tokens)")
     logger.info("=" * 70)
-
-    # Create OIDC auth provider
-    logger.info("Initializing OIDC authentication...")
-    oidc_provider = OIDCAuthProvider()
-    logger.info(f"   Issuer: {oidc_provider.issuer}")
-    logger.info(f"   Audience: {oidc_provider.audience}")
 
     # Create FastMCP HTTP app
     logger.info("Creating HTTP app at path /test...")
     app = mcp.http_app(path="/test")
     logger.info(f"   HTTP app created: {type(app)}")
 
-    # Add simple request logging middleware (no body reading to preserve streaming)
+    # Add request logging middleware with MCP message inspection
     class RequestLoggingMiddleware(BaseHTTPMiddleware):
         async def dispatch(self, request: Request, call_next):
-            # Log all non-health-check requests
+            # Log all non-health-check requests with MCP details
             if request.url.path not in ["/healthz", "/readyz"]:
-                logger.info(f"🌐 HTTP {request.method} {request.url.path}")
+                mcp_details = await self._extract_mcp_details(request)
+                logger.info(f"🌐 HTTP {request.method} {request.url.path}{mcp_details}")
 
             response = await call_next(request)
 
@@ -224,16 +230,62 @@ def main():
 
             return response
 
+        async def _extract_mcp_details(self, request: Request) -> str:
+            """Extract MCP method and tool/resource details from request."""
+            try:
+                # Read body without consuming it for downstream
+                body = await request.body()
+
+                # Parse JSON-RPC message
+                import json
+                message = json.loads(body)
+
+                method = message.get("method", "unknown")
+
+                # Extract details based on method type
+                if method == "tools/call":
+                    params = message.get("params", {})
+                    tool_name = params.get("name", "unknown")
+                    return f" → tools/call({tool_name})"
+                elif method == "resources/read":
+                    params = message.get("params", {})
+                    uri = params.get("uri", "unknown")
+                    return f" → resources/read({uri})"
+                elif method in ["tools/list", "resources/list", "prompts/list"]:
+                    return f" → {method}"
+                elif method == "initialize":
+                    return f" → initialize"
+                else:
+                    return f" → {method}"
+
+            except Exception:
+                # If we can't parse, just return empty string
+                return ""
+
     logger.info("Adding request logging middleware...")
     app.add_middleware(RequestLoggingMiddleware)
 
-    # Add OIDC middleware
-    logger.info("Adding OIDC authentication middleware...")
-    app.add_middleware(
-        OIDCAuthMiddleware,
-        auth_provider=oidc_provider,
-        exclude_paths=["/healthz", "/readyz"]
-    )
+    # Add authentication middleware based on mode
+    if args.no_auth:
+        logger.info(f"Adding NoAuth middleware (identity: {args.identity})...")
+        app.add_middleware(
+            NoAuthMiddleware,
+            identity=args.identity,
+            exclude_paths=["/healthz", "/readyz"]
+        )
+    else:
+        # Create OIDC auth provider
+        logger.info("Initializing OIDC authentication...")
+        oidc_provider = OIDCAuthProvider()
+        logger.info(f"   Issuer: {oidc_provider.issuer}")
+        logger.info(f"   Audience: {oidc_provider.audience}")
+
+        logger.info("Adding OIDC authentication middleware...")
+        app.add_middleware(
+            OIDCAuthMiddleware,
+            auth_provider=oidc_provider,
+            exclude_paths=["/healthz", "/readyz"]
+        )
 
     # Add health check routes
     app.add_route("/healthz", liveness_check)
@@ -241,11 +293,15 @@ def main():
 
     logger.info("✅ Test server ready")
     logger.info("")
-    logger.info("To test with Auth0 JWT token:")
-    logger.info("  1. Get token: ./test/get-user-token.py")
-    logger.info("  2. Test: ./test/test-mcp.py --transport http \\")
-    logger.info(f"           --url http://localhost:{args.port}/test \\")
-    logger.info("           --token-file /tmp/user-token.txt")
+    if args.no_auth:
+        logger.info("To test (no authentication required):")
+        logger.info(f"  ./test/test-mcp.py --url http://localhost:{args.port}/test")
+    else:
+        logger.info("To test with Auth0 JWT token:")
+        logger.info("  1. Get token: ./test/get-user-token.py")
+        logger.info("  2. Test: ./test/test-mcp.py --transport http \\")
+        logger.info(f"           --url http://localhost:{args.port}/test \\")
+        logger.info("           --token-file /tmp/user-token.txt")
     logger.info("")
 
     # Add health check filter to uvicorn access logger

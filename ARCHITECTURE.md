@@ -131,6 +131,48 @@ register_tools(mcp)
 3. Test server validates JWT against Auth0 JWKS
 4. No token issuance - direct pass-through authentication
 
+#### No-Auth Mode (Development)
+
+For rapid development, debugging, and CI/CD pipelines, the test server supports a **no-auth mode**:
+
+```
+┌──────────────┐     ┌─────────────────┐
+│ Test Client  │────▶│   Test Server   │
+│              │     │  (--no-auth)    │
+│ (no token)   │     │                 │
+└──────────────┘     └─────────────────┘
+                            │
+                            ▼
+                     [NoAuthMiddleware]
+                     Injects mock claims:
+                     - sub, preferred_username
+                     - email, iss, scope
+```
+
+**When to use no-auth mode:**
+- Adding new features - Test quickly without auth setup
+- Debugging issues - Isolate problems from authentication
+- CI/CD pipelines - Run automated tests without credentials
+- AI agent testing - Allow assistants to test changes directly
+
+**Starting no-auth mode:**
+```bash
+# Start test server without authentication
+python my_mcp_test_server.py --no-auth --port 8001
+
+# Custom identity for user-specific testing
+python my_mcp_test_server.py --no-auth --identity "dev-user" --port 8001
+
+# Run tests without authentication
+./test/test-mcp.py --url http://localhost:8001/test --no-auth
+```
+
+**Mock claims provided:**
+- `sub`, `preferred_username`, `name` → identity value (default: "test-user")
+- `email` → `{identity}@test.local`
+- `iss` → `http://localhost/no-auth`
+- `scope` → `openid profile email`
+
 ### 4. MCP Protocol Structure
 
 Understanding the MCP SDK's type system is critical for testing:
@@ -416,11 +458,18 @@ expected_markers = ["# FastMCP Tools"]  # ❌
 
 **Problem:** Tests fail with authentication errors.
 
-**Cause:** Using wrong token type for the server endpoint.
+**Cause:** Using wrong token type for the server endpoint or mode.
 
 **Solution:**
 - Main server (`/mcp`): Use MCP tokens from OAuth flow
 - Test server (`/test`): Use Auth0 JWT tokens directly
+- No-auth mode: Start server with `--no-auth`, test with `--no-auth`
+
+**Development workflow:**
+```bash
+# Server: python my_test_server.py --no-auth --port 8001
+# Tests:  ./test/test-mcp.py --url http://localhost:8001/test --no-auth
+```
 
 ### 4. Resource Registration Scope
 
