@@ -9,10 +9,13 @@ The mcp instance is passed in via register_tools() to avoid circular imports.
 
 import json
 import re
+import uuid
 from pathlib import Path
-from typing import Optional, Literal
+from typing import Optional, Literal, List, Dict, Any
 
 from jinja2 import Environment, FileSystemLoader, select_autoescape
+
+from artifact_store import artifact_store, get_mime_type_for_path
 
 # ============================================================================
 # Path Configuration
@@ -514,9 +517,24 @@ class TestExampleTool(TestPlugin):
             if static_path.exists():
                 files[output_path] = static_path.read_text()
 
+    # Generate unique project ID for artifact storage
+    project_id = f"{server_name_kebab}-{uuid.uuid4().hex[:8]}"
+
+    # Store all files as artifacts
+    for path, content in files.items():
+        mime_type = get_mime_type_for_path(path)
+        artifact_store.store(
+            project_id=project_id,
+            path=path,
+            content=content,
+            mime_type=mime_type,
+            description=f"Generated file for {server_name}"
+        )
+
     # Generate output
     if output_description == "summary":
         result = f"# Generated Project: {server_name}\n\n"
+        result += f"**Project ID**: `{project_id}`\n\n"
         result += f"## Project Structure\n\n"
         result += "```\n"
         for path in sorted(files.keys()):
@@ -529,17 +547,41 @@ class TestExampleTool(TestPlugin):
         result += f"4. Test locally: `python src/{server_name_snake}_server.py --port {port}`\n"
         result += "5. Build container: `make build`\n"
         result += "6. Deploy: `make helm-install`\n\n"
-        result += "Use `generate_server_scaffold` with `output_description=\"full\"` to see all file contents."
+        result += "Use `generate_server_scaffold` with `output_description=\"full\"` to retrieve file contents.\n"
+        result += f"\nAll {len(files)} files are stored as artifacts and can be retrieved individually via:\n"
+        result += f"`artifact://{project_id}/<path>`"
         return result
 
-    else:  # full output
-        result = f"# Generated Project: {server_name}\n\n"
+    else:  # full output - return resource links instead of embedded content
+        # Build a list of resource links for each file
+        resource_links = []
         for path in sorted(files.keys()):
-            result += f"## {path}\n\n"
-            result += "```\n"
-            result += files[path]
-            result += "\n```\n\n"
-        return result
+            mime_type = get_mime_type_for_path(path)
+            filename = path.split("/")[-1]
+            resource_links.append({
+                "type": "resource_link",
+                "uri": f"artifact://{project_id}/{path}",
+                "name": filename,
+                "description": f"{path} - Generated for {server_name}",
+                "mimeType": mime_type
+            })
+
+        # Return structured response with summary text and resource links
+        # FastMCP should serialize this properly for MCP clients
+        return {
+            "project_id": project_id,
+            "server_name": server_name,
+            "file_count": len(files),
+            "resource_links": resource_links,
+            "quick_start": [
+                "Copy the generated files to your project directory",
+                f"Implement your tools in src/{server_name_snake}_tools.py",
+                "Run pip install -r requirements.txt",
+                f"Test locally: python src/{server_name_snake}_server.py --port {port}",
+                "Build container: make build",
+                "Deploy: make helm-install"
+            ]
+        }
 
 
 # ============================================================================
@@ -685,6 +727,23 @@ def register_resources(mcp):
         architecture_path = BASE_DIR / "ARCHITECTURE.md"
         return architecture_path.read_text()
 
+    # Dynamic artifact resource - list artifacts in a project
+    @mcp.resource("artifact://{project_id}")
+    def list_project_artifacts(project_id: str) -> str:
+        """
+        List all artifacts in a generated project.
+
+        Args:
+            project_id: The project identifier (e.g., "my-server-abc12345")
+
+        Returns:
+            JSON list of artifact paths and URIs
+        """
+        artifacts = artifact_store.list_project(project_id)
+        if not artifacts:
+            return f"Error: No artifacts found for project: {project_id}"
+        return json.dumps([{"path": path, "uri": uri} for path, uri in artifacts], indent=2)
+
 
 # ============================================================================
 # Tool Registration
@@ -759,3 +818,57 @@ def register_tools(mcp):
             include_test=include_test,
             include_bin=include_bin
         )
+
+    @mcp.tool(name="get_artifact")
+    async def get_artifact(project_id: str, path: str) -> str:
+        """
+        Retrieve a generated artifact file by project ID and path.
+
+        After calling generate_server_scaffold, use this tool to retrieve
+        individual generated files. This allows fetching one file at a time
+        instead of all files at once, reducing context usage.
+
+        Args:
+            project_id: The project identifier returned by generate_server_scaffold
+                        (e.g., "my-server-abc12345")
+            path: The file path within the project (e.g., "src/my_server.py",
+                  "Makefile", "chart/values.yaml")
+
+        Returns:
+            File content as text, or error message if not found
+        """
+        artifact = artifact_store.get(project_id, path)
+        if artifact is None:
+            # List available files to help the user
+            available = artifact_store.list_project(project_id)
+            if not available:
+                return f"Error: Project '{project_id}' not found. No artifacts stored."
+            paths = [p for p, _ in available]
+            return f"Error: Artifact '{path}' not found in project '{project_id}'.\n\nAvailable files:\n" + "\n".join(f"  - {p}" for p in paths[:20])
+        return artifact.content
+
+    @mcp.tool(name="list_artifacts")
+    async def list_artifacts(project_id: str) -> str:
+        """
+        List all generated artifacts in a project.
+
+        Use this after generate_server_scaffold to see all available files,
+        then use get_artifact to retrieve specific files.
+
+        Args:
+            project_id: The project identifier returned by generate_server_scaffold
+
+        Returns:
+            JSON list of available artifact paths
+        """
+        artifacts = artifact_store.list_project(project_id)
+        if not artifacts:
+            all_projects = artifact_store.list_all_projects()
+            if all_projects:
+                return f"Error: Project '{project_id}' not found.\n\nAvailable projects:\n" + "\n".join(f"  - {p}" for p in all_projects)
+            return f"Error: No artifacts stored. Call generate_server_scaffold first."
+        return json.dumps({
+            "project_id": project_id,
+            "file_count": len(artifacts),
+            "files": [path for path, _ in artifacts]
+        }, indent=2)
