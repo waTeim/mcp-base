@@ -98,60 +98,7 @@ logger.info("✅ Resources and tools registered with test MCP server")
 # MCP Protocol Logging Middleware
 # ============================================================================
 
-def add_mcp_logging():
-    """Add detailed logging for MCP protocol operations."""
-
-    # Wrap at the resource_manager level
-    original_get_resources = mcp._resource_manager.get_resources
-    async def logged_get_resources():
-        logger.info("📋 MCP: get_resources called on resource_manager")
-        logger.info(f"   Internal state: {len(mcp._resource_manager._resources)} resources in _resources dict")
-        result = await original_get_resources()
-        logger.info(f"   → Type of result: {type(result)}")
-
-        # Get actual resource objects (dict values, not keys!)
-        if isinstance(result, dict):
-            result_list = list(result.values())
-            logger.info(f"   → Dict with {len(result_list)} resource objects")
-            for i, r in enumerate(result_list[:3]):
-                logger.info(f"      [{i}] Type: {type(r)}")
-                if hasattr(r, 'uri'):
-                    logger.info(f"           URI: {r.uri}")
-                if hasattr(r, 'name'):
-                    logger.info(f"           Name: {r.name}")
-            if len(result_list) > 3:
-                logger.info(f"      ... and {len(result_list) - 3} more")
-        else:
-            logger.info(f"   → Returning {len(result)} resources (not a dict)")
-
-        return result
-    mcp._resource_manager.get_resources = logged_get_resources
-
-    # Also wrap the FastMCP _list_resources handler
-    original_list_resources_handler = mcp._list_resources
-    async def logged_list_resources_handler(context):
-        logger.info("🔍 MCP: _list_resources (middleware) called")
-        result = await original_list_resources_handler(context)
-        logger.info(f"   → Result type: {type(result)}")
-        logger.info(f"   → Result length: {len(result)}")
-        return result
-    mcp._list_resources = logged_list_resources_handler
-
-    # Wrap the MCP protocol handler that returns MCPResource objects
-    original_list_resources_mcp = mcp._list_resources_mcp
-    async def logged_list_resources_mcp():
-        logger.info("🔍 MCP: _list_resources_mcp (protocol) called")
-        result = await original_list_resources_mcp()
-        logger.info(f"   → MCP protocol result type: {type(result)}")
-        logger.info(f"   → MCP protocol result length: {len(result)}")
-        if len(result) > 0:
-            logger.info(f"   → First item type: {type(result[0])}")
-            logger.info(f"   → First item: {result[0]}")
-        return result
-    mcp._list_resources_mcp = logged_list_resources_mcp
-
-add_mcp_logging()
-logger.info("✅ MCP protocol logging enabled")
+# MCP protocol logging removed - using RequestLoggingMiddleware instead
 
 # ============================================================================
 # Health Check Endpoints
