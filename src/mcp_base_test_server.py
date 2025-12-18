@@ -267,12 +267,13 @@ def main():
     app = mcp.http_app(path="/test")
     logger.info(f"   HTTP app created: {type(app)}")
 
-    # Add simple request logging middleware (no body reading to preserve streaming)
+    # Add request logging middleware with MCP message inspection
     class RequestLoggingMiddleware(BaseHTTPMiddleware):
         async def dispatch(self, request: Request, call_next):
-            # Log all non-health-check requests
+            # Log all non-health-check requests with MCP details
             if request.url.path not in ["/healthz", "/readyz"]:
-                logger.info(f"🌐 HTTP {request.method} {request.url.path}")
+                mcp_details = await self._extract_mcp_details(request)
+                logger.info(f"🌐 HTTP {request.method} {request.url.path}{mcp_details}")
 
             response = await call_next(request)
 
@@ -281,6 +282,38 @@ def main():
                 logger.info(f"   ← HTTP {response.status_code}")
 
             return response
+
+        async def _extract_mcp_details(self, request: Request) -> str:
+            """Extract MCP method and tool/resource details from request."""
+            try:
+                # Read body without consuming it for downstream
+                body = await request.body()
+
+                # Parse JSON-RPC message
+                import json
+                message = json.loads(body)
+
+                method = message.get("method", "unknown")
+
+                # Extract details based on method type
+                if method == "tools/call":
+                    params = message.get("params", {})
+                    tool_name = params.get("name", "unknown")
+                    return f" → tools/call({tool_name})"
+                elif method == "resources/read":
+                    params = message.get("params", {})
+                    uri = params.get("uri", "unknown")
+                    return f" → resources/read({uri})"
+                elif method in ["tools/list", "resources/list", "prompts/list"]:
+                    return f" → {method}"
+                elif method == "initialize":
+                    return f" → initialize"
+                else:
+                    return f" → {method}"
+
+            except Exception:
+                # If we can't parse, just return empty string
+                return ""
 
     logger.info("Adding request logging middleware...")
     app.add_middleware(RequestLoggingMiddleware)
