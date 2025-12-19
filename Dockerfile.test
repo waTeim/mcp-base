@@ -34,9 +34,14 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy application code
 COPY src/mcp_base_test_server.py .
 COPY src/mcp_base_tools.py .
+COPY src/artifact_store.py .
 COPY src/user_hash.py .
 COPY src/auth_oidc.py .
 COPY src/mcp_context.py .
+
+# Copy templates and patterns (required by mcp_base_tools.py)
+COPY templates/ ./templates/
+COPY patterns/ ./patterns/
 
 # Create a non-root user for security
 RUN useradd -m -u 1000 mcpuser && \
