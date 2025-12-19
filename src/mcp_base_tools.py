@@ -278,19 +278,26 @@ async def generate_server_scaffold_impl(
     include_helm: bool = True,
     include_test: bool = True,
     include_bin: bool = True
-) -> str:
+) -> Dict[str, Any]:
     """
     Generate complete MCP server project scaffold.
 
     Creates a full project structure with all necessary files for
-    a production-ready Kubernetes MCP server.
+    a production-ready Kubernetes MCP server. Files are stored as artifacts
+    and can be retrieved individually using get_artifact.
 
-    IMPORTANT: Use default parameter values unless the user explicitly specifies otherwise.
-    Do not override include_helm, include_test, or include_bin unless explicitly requested.
+    CRITICAL USAGE RULES:
+    1. NON-DEVIATION RULE: Use MCPBase scaffold artifacts as the ONLY source of project files.
+       DO NOT create alternate scaffolds or replacement files under any circumstances.
+    2. ERROR HANDLING: On any tool or schema error, STOP immediately, report the full error,
+       and propose tool-based recovery (e.g., list_artifacts + get_artifact).
+       DO NOT attempt to work around errors by creating alternate scaffolds.
+    3. PARAMETER DEFAULTS: Use default parameter values unless the user explicitly specifies otherwise.
+       Do not override include_helm, include_test, or include_bin unless explicitly requested.
 
     Args:
         server_name: Human-readable server name (e.g., "Kubernetes Manager MCP")
-        output_description: "full" for all file contents, "summary" for file list only
+        output_description: Deprecated - included for backward compatibility only (ignored)
         port: HTTP server port (default: 4207)
         default_namespace: Default Kubernetes namespace
         operator_cluster_roles: Comma-separated ClusterRoles to bind (e.g., "my-operator-edit,other-operator-view")
@@ -299,7 +306,20 @@ async def generate_server_scaffold_impl(
         include_bin: Include utility scripts (default: True)
 
     Returns:
-        Generated project structure and file contents (or summary)
+        JSON object with project metadata, file list, and resource links.
+        Use get_artifact(project_id, path) to retrieve individual files.
+
+        Structure:
+        {
+            "project_id": "server-name-abc123",
+            "server_name": "Server Name",
+            "file_count": 37,
+            "files": ["Dockerfile", "src/...", ...],
+            "resource_links": [{"uri": "artifact://...", "path": "...", ...}],
+            "quick_start": ["..."],
+            "warnings": [],
+            "truncated": false
+        }
 
     Examples:
         - Basic: generate_server_scaffold(server_name="Kubernetes Manager MCP")
@@ -531,57 +551,44 @@ class TestExampleTool(TestPlugin):
             description=f"Generated file for {server_name}"
         )
 
-    # Generate output
+    # Build resource links for all files (always)
+    resource_links = []
+    for path in sorted(files.keys()):
+        mime_type = get_mime_type_for_path(path)
+        filename = path.split("/")[-1]
+        resource_links.append({
+            "uri": f"artifact://{project_id}/{path}",
+            "path": path,
+            "name": filename,
+            "mimeType": mime_type
+        })
+
+    # Always return a consistent JSON object structure
+    result = {
+        "project_id": project_id,
+        "server_name": server_name,
+        "server_name_snake": server_name_snake,
+        "server_name_kebab": server_name_kebab,
+        "file_count": len(files),
+        "files": sorted(files.keys()),
+        "resource_links": resource_links,
+        "quick_start": [
+            "Retrieve individual files using get_artifact(project_id, path)",
+            f"Implement your tools in src/{server_name_snake}_tools.py",
+            "Install dependencies: pip install -r requirements.txt",
+            f"Test locally: python src/{server_name_snake}_server.py --port {port}",
+            "Build container: make build",
+            "Deploy to Kubernetes: make helm-install"
+        ],
+        "warnings": [],
+        "truncated": False
+    }
+
+    # Add a summary field for backward compatibility if requested
     if output_description == "summary":
-        result = f"# Generated Project: {server_name}\n\n"
-        result += f"**Project ID**: `{project_id}`\n\n"
-        result += f"## Project Structure\n\n"
-        result += "```\n"
-        for path in sorted(files.keys()):
-            result += f"{path}\n"
-        result += "```\n\n"
-        result += f"## Quick Start\n\n"
-        result += "1. Copy the generated files to your project directory\n"
-        result += f"2. Implement your tools in `src/{server_name_snake}_tools.py`\n"
-        result += "3. Run `pip install -r requirements.txt`\n"
-        result += f"4. Test locally: `python src/{server_name_snake}_server.py --port {port}`\n"
-        result += "5. Build container: `make build`\n"
-        result += "6. Deploy: `make helm-install`\n\n"
-        result += "Use `generate_server_scaffold` with `output_description=\"full\"` to retrieve file contents.\n"
-        result += f"\nAll {len(files)} files are stored as artifacts and can be retrieved individually via:\n"
-        result += f"`artifact://{project_id}/<path>`"
-        return result
+        result["summary"] = f"Generated {len(files)} files for {server_name}. Use get_artifact(project_id='{project_id}', path='<file>') to retrieve individual files."
 
-    else:  # full output - return resource links instead of embedded content
-        # Build a list of resource links for each file
-        resource_links = []
-        for path in sorted(files.keys()):
-            mime_type = get_mime_type_for_path(path)
-            filename = path.split("/")[-1]
-            resource_links.append({
-                "type": "resource_link",
-                "uri": f"artifact://{project_id}/{path}",
-                "name": filename,
-                "description": f"{path} - Generated for {server_name}",
-                "mimeType": mime_type
-            })
-
-        # Return structured response with summary text and resource links
-        # FastMCP should serialize this properly for MCP clients
-        return {
-            "project_id": project_id,
-            "server_name": server_name,
-            "file_count": len(files),
-            "resource_links": resource_links,
-            "quick_start": [
-                "Copy the generated files to your project directory",
-                f"Implement your tools in src/{server_name_snake}_tools.py",
-                "Run pip install -r requirements.txt",
-                f"Test locally: python src/{server_name_snake}_server.py --port {port}",
-                "Build container: make build",
-                "Deploy: make helm-install"
-            ]
-        }
+    return result
 
 
 # ============================================================================
@@ -806,8 +813,13 @@ def register_tools(mcp):
         include_helm: bool = True,
         include_test: bool = True,
         include_bin: bool = True
-    ) -> str:
-        """Generate complete MCP server project scaffold."""
+    ) -> Dict[str, Any]:
+        """
+        Generate complete MCP server project scaffold.
+
+        Returns a JSON object with project metadata and file references.
+        Use get_artifact(project_id, path) to retrieve individual files.
+        """
         return await generate_server_scaffold_impl(
             server_name=server_name,
             output_description=output_description,
@@ -827,6 +839,10 @@ def register_tools(mcp):
         After calling generate_server_scaffold, use this tool to retrieve
         individual generated files. This allows fetching one file at a time
         instead of all files at once, reducing context usage.
+
+        CRITICAL: If this tool returns an error, DO NOT create replacement files.
+        Instead, use list_artifacts to see available files, or report the error
+        and ask the user for guidance.
 
         Args:
             project_id: The project identifier returned by generate_server_scaffold
@@ -854,6 +870,10 @@ def register_tools(mcp):
 
         Use this after generate_server_scaffold to see all available files,
         then use get_artifact to retrieve specific files.
+
+        CRITICAL: This is the authoritative source for project files. Always use
+        the official artifact list - DO NOT create alternate file lists or replacement
+        scaffolds.
 
         Args:
             project_id: The project identifier returned by generate_server_scaffold

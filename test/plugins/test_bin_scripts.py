@@ -52,42 +52,36 @@ class TestBinScripts(TestPlugin):
             else:
                 text_content = str(result)
 
-            # Check for error message
-            if text_content.startswith("Error"):
+            # Parse JSON response
+            try:
+                data = json.loads(text_content)
+            except json.JSONDecodeError:
                 return TestResult(
                     plugin_name=self.get_name(),
                     tool_name=self.tool_name,
                     passed=False,
-                    message="Scaffold generation failed",
-                    error=text_content,
+                    message="Response is not valid JSON",
+                    error=f"Got: {text_content[:200]}...",
                     duration_ms=(time.time() - start_time) * 1000
                 )
 
-            # Extract project_id from the summary output
-            # Format: **Project ID**: `bin-test-server-abc12345`
-            project_id = None
-            for line in text_content.split('\n'):
-                if 'Project ID' in line and '`' in line:
-                    # Extract the ID between backticks
-                    parts = line.split('`')
-                    if len(parts) >= 2:
-                        project_id = parts[1]
-                        break
-
+            # Extract project_id from JSON response
+            project_id = data.get("project_id")
             if not project_id:
                 return TestResult(
                     plugin_name=self.get_name(),
                     tool_name=self.tool_name,
                     passed=False,
                     message="Could not extract project_id from scaffold output",
-                    error=f"Output: {text_content[:500]}...",
+                    error=f"Data: {data}",
                     duration_ms=(time.time() - start_time) * 1000
                 )
 
-            # 1. Verify all required bin scripts are listed
+            # 1. Verify all required bin scripts are in the files list
+            files_list = data.get("files", [])
             missing_scripts = []
             for script in self.REQUIRED_BIN_SCRIPTS:
-                if script not in text_content:
+                if script not in files_list:
                     missing_scripts.append(script)
 
             if missing_scripts:
