@@ -136,7 +136,7 @@ def main():
         "Content-Type": "application/json"
     }
 
-    # Search for user by email
+    # Search for ALL users with this email (across all connections)
     search_response = requests.get(
         f"https://{domain}/api/v2/users",
         headers=headers,
@@ -150,69 +150,117 @@ def main():
     users = search_response.json()
 
     if not users:
-        print(f"❌ User not found: {user_email}")
+        print(f"❌ No users found with email: {user_email}")
         sys.exit(1)
 
-    user = users[0]
-    user_id = user["user_id"]
-
-    print(f"✅ Found user: {user_id}")
+    # Display all found users
+    print(f"✅ Found {len(users)} user(s) with email {user_email}:")
     print()
 
-    # Check current app_metadata
-    app_metadata = user.get("app_metadata", {})
-    allowed_clients = app_metadata.get("allowedClients", [])
+    for i, u in enumerate(users, 1):
+        user_id = u["user_id"]
+        connection = user_id.split("|")[0] if "|" in user_id else "unknown"
+        app_metadata = u.get("app_metadata", {})
+        allowed = app_metadata.get("allowedClients", [])
 
-    print(f"Current allowedClients: {allowed_clients}")
+        print(f"  {i}. {connection:20s} ({user_id})")
+        print(f"     Current clients: {len(allowed)}")
+
+    print()
+    print("Which user(s) should have access?")
+    print("  Enter numbers separated by commas (e.g., '1,2' or '1' or 'all')")
     print()
 
-    # Determine which client IDs to add
-    clients_to_add = []
-    client_names = []
+    selection = input("Selection: ").strip().lower()
 
-    if client_type in ["server", "both"]:
-        if server_client_id and server_client_id not in allowed_clients:
-            clients_to_add.append(server_client_id)
-            client_names.append("server client")
+    # Parse selection
+    selected_indices = []
+    if selection == 'all':
+        selected_indices = list(range(len(users)))
+    elif selection:
+        try:
+            selected_indices = [int(s.strip()) - 1 for s in selection.split(',')]
+            # Validate indices
+            if any(i < 0 or i >= len(users) for i in selected_indices):
+                print("❌ Invalid selection")
+                sys.exit(1)
+        except ValueError:
+            print("❌ Invalid input format")
+            sys.exit(1)
+    else:
+        print("❌ No selection made")
+        sys.exit(1)
 
-    if client_type in ["test", "both"]:
-        if test_client_id and test_client_id not in allowed_clients:
-            clients_to_add.append(test_client_id)
-            client_names.append("test client")
+    selected_users = [users[i] for i in selected_indices]
+    print(f"\n📝 Will update {len(selected_users)} user(s)")
+    print()
 
-    if not clients_to_add:
-        print("✅ User already has access to the requested client(s)!")
-        print("   No changes needed.")
-        sys.exit(0)
+    # Process each selected user
+    for user in selected_users:
+        user_id = user["user_id"]
+        connection = user_id.split("|")[0] if "|" in user_id else "unknown"
 
-    # Add client(s) to allowed clients
-    print(f"📝 Adding {', '.join(client_names)} to allowedClients...")
-    allowed_clients.extend(clients_to_add)
+        print(f"{'='*70}")
+        print(f"Processing: {connection} ({user_id})")
+        print(f"{'='*70}")
 
-    patch_response = requests.patch(
-        f"https://{domain}/api/v2/users/{user_id}",
-        headers=headers,
-        json={
-            "app_metadata": {
-                "allowedClients": allowed_clients
+        # Check current app_metadata
+        app_metadata = user.get("app_metadata", {})
+        allowed_clients = app_metadata.get("allowedClients", [])
+
+        print(f"Current allowedClients: {allowed_clients}")
+        print()
+
+        # Determine which client IDs to add
+        clients_to_add = []
+        client_names = []
+
+        if client_type in ["server", "both"]:
+            if server_client_id and server_client_id not in allowed_clients:
+                clients_to_add.append(server_client_id)
+                client_names.append("server client")
+
+        if client_type in ["test", "both"]:
+            if test_client_id and test_client_id not in allowed_clients:
+                clients_to_add.append(test_client_id)
+                client_names.append("test client")
+
+        if not clients_to_add:
+            print("✅ User already has access to the requested client(s)!")
+            print("   No changes needed.")
+            continue  # Move to next user
+
+        # Add client(s) to allowed clients
+        print(f"📝 Adding {', '.join(client_names)} to allowedClients...")
+        allowed_clients.extend(clients_to_add)
+
+        patch_response = requests.patch(
+            f"https://{domain}/api/v2/users/{user_id}",
+            headers=headers,
+            json={
+                "app_metadata": {
+                    "allowedClients": allowed_clients
+                }
             }
-        }
-    )
+        )
 
-    if patch_response.status_code != 200:
-        print(f"❌ Failed to update user: {patch_response.text}")
-        sys.exit(1)
+        if patch_response.status_code != 200:
+            print(f"❌ Failed to update user: {patch_response.text}")
+            continue  # Move to next user
 
-    updated_user = patch_response.json()
-    updated_allowed = updated_user.get("app_metadata", {}).get("allowedClients", [])
+        updated_user = patch_response.json()
+        updated_allowed = updated_user.get("app_metadata", {}).get("allowedClients", [])
 
-    print("✅ User updated!")
-    print()
-    print(f"New allowedClients: {updated_allowed}")
+        print("✅ User updated!")
+        print(f"New allowedClients ({len(updated_allowed)} total): {updated_allowed[:5]}...")
+
+    # Summary at the end
     print()
     print("=" * 70)
     print("🎉 Access granted!")
     print("=" * 70)
+    print()
+    print(f"✅ Updated {len(selected_users)} user(s)")
     print()
 
     if client_type in ["server", "both"]:

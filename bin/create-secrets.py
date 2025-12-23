@@ -274,7 +274,6 @@ Secrets Created:
      - mgmt-client-id: Management API client ID (for scripts)
      - mgmt-client-secret: Management API client secret (for scripts)
      - auth0-domain: Auth0 domain
-     - connection-id: Auth0 connection ID
 
   2. <release-name>-jwt-signing-key
      - jwt-signing-key: JWT signing key for MCP tokens (256-bit hex)
@@ -323,7 +322,7 @@ Secrets Created:
 
     auth_config = creator.load_config(args.config_file)
 
-    required_keys = ['domain', 'issuer', 'audience', 'management_api', 'connection_id']
+    required_keys = ['domain', 'issuer', 'audience', 'management_api']
     missing = [key for key in required_keys if key not in auth_config]
 
     if missing:
@@ -361,8 +360,7 @@ Secrets Created:
         'server-client-secret': server_client_secret,
         'mgmt-client-id': mgmt_client_id,
         'mgmt-client-secret': mgmt_secret,
-        'auth0-domain': auth_config['domain'],
-        'connection-id': auth_config['connection_id'],
+        'auth0-domain': auth_config['domain']
     }
 
     print("Secret to create:")
@@ -378,7 +376,6 @@ Secrets Created:
     print()
     print("   Common Configuration:")
     print(f"     - auth0-domain: {mgmt_data.get('auth0-domain', 'N/A')}")
-    print(f"     - connection-id: {mgmt_data.get('connection-id', 'N/A')}")
     print()
 
     if not args.dry_run:
