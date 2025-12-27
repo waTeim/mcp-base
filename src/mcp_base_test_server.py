@@ -214,6 +214,17 @@ def main():
     app = mcp.http_app(path="/test")
     logger.info(f"   HTTP app created: {type(app)}")
 
+    # Add CORS middleware to handle OPTIONS preflight requests
+    from starlette.middleware.cors import CORSMiddleware
+    logger.info("Adding CORS middleware...")
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["*"],  # Allow all origins (customize as needed)
+        allow_credentials=True,
+        allow_methods=["GET", "POST", "OPTIONS"],  # Explicitly allow OPTIONS
+        allow_headers=["*"],
+    )
+
     # Add request logging middleware with MCP message inspection
     class RequestLoggingMiddleware(BaseHTTPMiddleware):
         async def dispatch(self, request: Request, call_next):
