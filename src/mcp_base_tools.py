@@ -122,15 +122,12 @@ async def list_templates_impl() -> str:
     result += "- `test/test_list_resources.py` - Test resource listing (as-is)\n"
     result += "- `test/test_read_resource.py` - Test resource reading (as-is)\n"
     result += "- `test/test_list_prompts.py` - Test prompt listing (as-is)\n"
-    # Bin scripts (note: only .py scripts are allowed in bin/)
-    result += "\n## Bin Scripts (Python only - NO shell scripts)\n"
-    result += "- `bin/add-user.py.j2` - Add Auth0 users with roles\n"
-    result += "- `bin/create-secrets.py.j2` - Create Kubernetes secrets\n"
-    result += "- `bin/make-config.py.j2` - Generate configuration files (auth0-config.json, helm-values.yaml)\n"
-    result += "- `bin/setup-auth0.py` - Auth0 tenant setup (as-is, static)\n"
-    result += "- `bin/setup-rbac.py.j2` - RBAC setup script\n"
-    result += "\n**IMPORTANT**: The bin/ directory must only contain Python scripts (.py). "
-    result += "Shell scripts (.sh) are NOT allowed.\n"
+
+    # Note about utility scripts
+    result += "\n## Utility Scripts (Separate Package)\n"
+    result += "Utility scripts (add-user.py, setup-auth0.py, setup-rbac.py, etc.) are NOT included\n"
+    result += "in the scaffold. They are distributed as a separate package:\n"
+    result += "  pip install mcp-base-tools\n"
 
     return result
 
@@ -276,8 +273,7 @@ async def generate_server_scaffold_impl(
     default_namespace: str = "default",
     operator_cluster_roles: Optional[str] = None,
     include_helm: bool = True,
-    include_test: bool = True,
-    include_bin: bool = True
+    include_test: bool = True
 ) -> Dict[str, Any]:
     """
     Generate complete MCP server project scaffold.
@@ -286,6 +282,10 @@ async def generate_server_scaffold_impl(
     a production-ready Kubernetes MCP server. Files are stored as artifacts
     and can be retrieved individually using get_artifact.
 
+    NOTE: Utility scripts (bin/add-user.py, bin/setup-auth0.py, etc.) are NOT included
+    in the scaffold. They are distributed as a separate Python package to avoid context
+    bloat. Install via: pip install mcp-base-tools
+
     CRITICAL USAGE RULES:
     1. NON-DEVIATION RULE: Use MCPBase scaffold artifacts as the ONLY source of project files.
        DO NOT create alternate scaffolds or replacement files under any circumstances.
@@ -293,7 +293,7 @@ async def generate_server_scaffold_impl(
        and propose tool-based recovery (e.g., list_artifacts + get_artifact).
        DO NOT attempt to work around errors by creating alternate scaffolds.
     3. PARAMETER DEFAULTS: Use default parameter values unless the user explicitly specifies otherwise.
-       Do not override include_helm, include_test, or include_bin unless explicitly requested.
+       Do not override include_helm or include_test unless explicitly requested.
 
     Args:
         server_name: Human-readable server name (e.g., "Kubernetes Manager MCP")
@@ -303,7 +303,6 @@ async def generate_server_scaffold_impl(
         operator_cluster_roles: Comma-separated ClusterRoles to bind (e.g., "my-operator-edit,other-operator-view")
         include_helm: Include Helm chart (default: True)
         include_test: Include test framework (default: True)
-        include_bin: Include utility scripts (default: True)
 
     Returns:
         JSON object with project metadata, file list, and resource links.
@@ -512,30 +511,9 @@ class TestExampleTool(TestPlugin):
             )
 '''
 
-    # Utility scripts
-    if include_bin:
-        bin_templates = [
-            ("bin/add-user.py.j2", "bin/add-user.py"),
-            ("bin/create-secrets.py.j2", "bin/create-secrets.py"),
-            ("bin/make-config.py.j2", "bin/make-config.py"),
-            ("bin/setup-rbac.py.j2", "bin/setup-rbac.py"),
-        ]
-
-        bin_static = [
-            ("bin/setup-auth0.py", "bin/setup-auth0.py"),
-        ]
-
-        for template_path, output_path in bin_templates:
-            try:
-                template = jinja_env.get_template(template_path)
-                files[output_path] = template.render(**variables)
-            except Exception as e:
-                files[output_path] = f"# Error rendering: {e}"
-
-        for template_path, output_path in bin_static:
-            static_path = TEMPLATES_DIR / template_path
-            if static_path.exists():
-                files[output_path] = static_path.read_text()
+    # NOTE: bin/ scripts (add-user.py, setup-auth0.py, setup-rbac.py, etc.) are NOT included
+    # in the scaffold. They are distributed as a separate Python package to avoid context
+    # bloat - these large utility scripts don't need customization and can be installed via pip.
 
     # Generate unique project ID for artifact storage
     project_id = f"{server_name_kebab}-{uuid.uuid4().hex[:8]}"
@@ -573,12 +551,13 @@ class TestExampleTool(TestPlugin):
         "files": sorted(files.keys()),
         "resource_links": resource_links,
         "quick_start": [
-            "Retrieve individual files using get_artifact(project_id, path)",
+            f"Retrieve files: get_artifact(project_id='{project_id}', path='...')",
             f"Implement your tools in src/{server_name_snake}_tools.py",
             "Install dependencies: pip install -r requirements.txt",
             f"Test locally: python src/{server_name_snake}_server.py --port {port}",
             "Build container: make build",
-            "Deploy to Kubernetes: make helm-install"
+            "Deploy to Kubernetes: make helm-install",
+            "Utility scripts (setup-auth0.py, add-user.py, etc.): pip install mcp-base-tools"
         ],
         "warnings": [],
         "truncated": False
@@ -586,7 +565,7 @@ class TestExampleTool(TestPlugin):
 
     # Add a summary field for backward compatibility if requested
     if output_description == "summary":
-        result["summary"] = f"Generated {len(files)} files for {server_name}. Use get_artifact(project_id='{project_id}', path='<file>') to retrieve individual files."
+        result["summary"] = f"Generated {len(files)} files for {server_name}. Use get_artifact(project_id, path) to retrieve files."
 
     return result
 
@@ -811,14 +790,22 @@ def register_tools(mcp):
         default_namespace: str = "default",
         operator_cluster_roles: Optional[str] = None,
         include_helm: bool = True,
-        include_test: bool = True,
-        include_bin: bool = True
+        include_test: bool = True
     ) -> Dict[str, Any]:
         """
         Generate complete MCP server project scaffold.
 
         Returns a JSON object with project metadata and file references.
         Use get_artifact(project_id, path) to retrieve individual files.
+
+        NOTE: Utility scripts (bin/add-user.py, bin/setup-auth0.py, etc.) are NOT included.
+        They are distributed as a separate Python package: pip install mcp-base-tools
+
+        Returns:
+            JSON object containing:
+            - project_id: Unique identifier for retrieving artifacts
+            - files: List of all generated file paths
+            - quick_start: Steps to get started
         """
         return await generate_server_scaffold_impl(
             server_name=server_name,
@@ -827,8 +814,7 @@ def register_tools(mcp):
             default_namespace=default_namespace,
             operator_cluster_roles=operator_cluster_roles,
             include_helm=include_helm,
-            include_test=include_test,
-            include_bin=include_bin
+            include_test=include_test
         )
 
     @mcp.tool(name="get_artifact")
@@ -892,3 +878,4 @@ def register_tools(mcp):
             "file_count": len(artifacts),
             "files": [path for path, _ in artifacts]
         }, indent=2)
+

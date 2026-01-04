@@ -58,6 +58,7 @@ class TestGenerateServerScaffold(TestPlugin):
                 )
 
             # Verify expected files in files array
+            # NOTE: bin/ scripts are no longer included in scaffold - they are in a separate package
             expected_files = [
                 "src/my_test_server_server.py",  # Entry point
                 "src/my_test_server_tools.py",   # Tools file
@@ -70,12 +71,6 @@ class TestGenerateServerScaffold(TestPlugin):
                 "chart/templates/prompts-configmap.yaml",  # Prompts ConfigMap
                 "test/test-mcp.py",
                 "test/plugins/__init__.py",
-                # Bin scripts (Python only - no .sh allowed)
-                "bin/add-user.py",
-                "bin/create-secrets.py",
-                "bin/make-config.py",
-                "bin/setup-auth0.py",
-                "bin/setup-rbac.py",
             ]
 
             files_list = data.get("files", [])

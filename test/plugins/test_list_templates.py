@@ -26,12 +26,13 @@ class TestListTemplates(TestPlugin):
                 text_content = str(result)
 
             # Verify expected content
+            # NOTE: bin/ scripts are now in a separate package, so we only check core templates
             expected_sections = [
                 "Server Templates",
                 "Container Templates",
                 "Helm Chart Templates",
                 "Utility Templates",
-                "Bin Scripts"  # Must be present with Python-only constraint
+                "Utility Scripts"  # Section noting scripts are in separate package
             ]
 
             expected_templates = [
@@ -40,18 +41,6 @@ class TestListTemplates(TestPlugin):
                 "Dockerfile.j2",
                 "Chart.yaml.j2",
                 "Makefile.j2",
-                # Bin script templates (Python only - NO shell scripts)
-                "add-user.py.j2",
-                "create-secrets.py.j2",
-                "make-config.py.j2",
-                "setup-rbac.py.j2",
-                "setup-auth0.py"  # Static file, not .j2
-            ]
-
-            # Verify Python-only constraint is documented
-            python_only_markers = [
-                "Python only",
-                "NO shell scripts"
             ]
 
             missing_sections = [s for s in expected_sections if s not in text_content]
@@ -75,22 +64,11 @@ class TestListTemplates(TestPlugin):
                     duration_ms=(time.time() - start_time) * 1000
                 )
 
-            # Verify Python-only constraint is documented
-            missing_markers = [m for m in python_only_markers if m not in text_content]
-            if missing_markers:
-                return TestResult(
-                    plugin_name=self.get_name(),
-                    tool_name=self.tool_name,
-                    passed=False,
-                    message=f"Missing Python-only constraint markers: {missing_markers}",
-                    duration_ms=(time.time() - start_time) * 1000
-                )
-
             return TestResult(
                 plugin_name=self.get_name(),
                 tool_name=self.tool_name,
                 passed=True,
-                message=f"Found all expected sections, templates, and Python-only constraint",
+                message=f"Found all expected sections and templates",
                 duration_ms=(time.time() - start_time) * 1000
             )
 

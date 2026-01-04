@@ -84,6 +84,9 @@ Tools actually create files and directories on disk.
 | Tool | Description | Creates Files? |
 |------|-------------|----------------|
 | `generate_server_scaffold` | **Generate complete MCP server project** | ✅ Yes - creates full directory structure |
+| `get_retrieval_script` | **Get script for efficient artifact retrieval** | ⚠️ Returns script - prevents context bloat |
+| `get_artifact` | Retrieve individual generated files | ⚠️ Returns content - loads into context |
+| `list_artifacts` | List all files in a generated project | ❌ No - returns JSON list |
 | `render_template` | Render individual template to string | ⚠️ Returns string - you must write it |
 | `list_templates` | List available templates | ❌ No |
 | `list_patterns` | List pattern documentation | ❌ No |

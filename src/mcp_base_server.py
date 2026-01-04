@@ -55,21 +55,30 @@ mcp = FastMCP(
 You are an MCP server construction assistant. You help AI agents build
 production-ready MCP servers for Kubernetes environments.
 
-Available resources:
-- Templates for server code, Dockerfile, Helm charts
-- Pattern documentation for authentication, tools, deployment
+WORKFLOW for building MCP servers:
+1. Call generate_server_scaffold(server_name="...") to create the project
+   - Returns project_id, file list, and resource links
+2. Use get_artifact(project_id, path) to retrieve individual files
+3. Use list_artifacts(project_id) to see all available files
 
 Available tools:
 - generate_server_scaffold: Create complete server project structure
+- get_artifact: Retrieve a specific file from a generated scaffold
+- list_artifacts: List all files in a scaffold project
 - render_template: Render individual templates with parameters
 - list_templates: List available templates
 - get_pattern: Get pattern documentation
 
-When building a new MCP server:
-1. Use list_templates to see available templates
-2. Use get_pattern to understand implementation patterns
-3. Use generate_server_scaffold to create the project
-4. Customize the generated files for your specific use case
+NOTE: Utility scripts (add-user.py, setup-auth0.py, setup-rbac.py, etc.) are
+distributed as a separate package. Install via: pip install mcp-base-tools
+
+Example workflow:
+1. result = generate_server_scaffold(server_name="My Server")
+   project_id = result["project_id"]  # e.g., "my-server-abc12345"
+
+2. files = list_artifacts(project_id)
+
+3. content = get_artifact(project_id, "src/my_server.py")
 """
 )
 
