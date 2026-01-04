@@ -26,13 +26,13 @@ class TestListTemplates(TestPlugin):
                 text_content = str(result)
 
             # Verify expected content
-            # NOTE: bin/ scripts are now in a separate package, so we only check core templates
+            # NOTE: Utility scripts are available via mcp-base CLI (pip install mcp-base)
             expected_sections = [
                 "Server Templates",
                 "Container Templates",
                 "Helm Chart Templates",
                 "Utility Templates",
-                "Utility Scripts"  # Section noting scripts are in separate package
+                "Utility Scripts"  # Section noting scripts are available via mcp-base CLI
             ]
 
             expected_templates = [

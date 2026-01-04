@@ -69,8 +69,9 @@ Available tools:
 - list_templates: List available templates
 - get_pattern: Get pattern documentation
 
-NOTE: Utility scripts (add-user.py, setup-auth0.py, setup-rbac.py, etc.) are
-distributed as a separate package. Install via: pip install mcp-base-tools
+NOTE: Utility scripts are available via the mcp-base CLI:
+  pip install mcp-base
+  mcp-base --help  # Shows: add-user, create-secrets, make-config, setup-oidc, setup-rbac
 
 Example workflow:
 1. result = generate_server_scaffold(server_name="My Server")

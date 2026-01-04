@@ -125,9 +125,10 @@ async def list_templates_impl() -> str:
 
     # Note about utility scripts
     result += "\n## Utility Scripts (Separate Package)\n"
-    result += "Utility scripts (add-user.py, setup-auth0.py, setup-rbac.py, etc.) are NOT included\n"
-    result += "in the scaffold. They are distributed as a separate package:\n"
-    result += "  pip install mcp-base-tools\n"
+    result += "Utility scripts are NOT included in the scaffold.\n"
+    result += "They are available via the mcp-base CLI:\n"
+    result += "  pip install mcp-base\n"
+    result += "  mcp-base --help  # Shows: add-user, create-secrets, make-config, setup-oidc, setup-rbac\n"
 
     return result
 
@@ -282,9 +283,9 @@ async def generate_server_scaffold_impl(
     a production-ready Kubernetes MCP server. Files are stored as artifacts
     and can be retrieved individually using get_artifact.
 
-    NOTE: Utility scripts (bin/add-user.py, bin/setup-auth0.py, etc.) are NOT included
-    in the scaffold. They are distributed as a separate Python package to avoid context
-    bloat. Install via: pip install mcp-base-tools
+    NOTE: Utility scripts are NOT included in the scaffold. They are available via the
+    mcp-base CLI to avoid context bloat. Install via: pip install mcp-base
+    Then run: mcp-base --help  # Shows: add-user, create-secrets, make-config, setup-oidc, setup-rbac
 
     CRITICAL USAGE RULES:
     1. NON-DEVIATION RULE: Use MCPBase scaffold artifacts as the ONLY source of project files.
@@ -511,9 +512,9 @@ class TestExampleTool(TestPlugin):
             )
 '''
 
-    # NOTE: bin/ scripts (add-user.py, setup-auth0.py, setup-rbac.py, etc.) are NOT included
-    # in the scaffold. They are distributed as a separate Python package to avoid context
-    # bloat - these large utility scripts don't need customization and can be installed via pip.
+    # NOTE: Utility scripts (add-user, setup-oidc, setup-rbac, etc.) are NOT included in the
+    # scaffold. They are available via the mcp-base CLI (pip install mcp-base) to avoid context
+    # bloat - these large utility scripts don't need customization and can be run via mcp-base.
 
     # Generate unique project ID for artifact storage
     project_id = f"{server_name_kebab}-{uuid.uuid4().hex[:8]}"
@@ -557,7 +558,7 @@ class TestExampleTool(TestPlugin):
             f"Test locally: python src/{server_name_snake}_server.py --port {port}",
             "Build container: make build",
             "Deploy to Kubernetes: make helm-install",
-            "Utility scripts (setup-auth0.py, add-user.py, etc.): pip install mcp-base-tools"
+            "Utility scripts: pip install mcp-base && mcp-base --help"
         ],
         "warnings": [],
         "truncated": False
@@ -798,8 +799,8 @@ def register_tools(mcp):
         Returns a JSON object with project metadata and file references.
         Use get_artifact(project_id, path) to retrieve individual files.
 
-        NOTE: Utility scripts (bin/add-user.py, bin/setup-auth0.py, etc.) are NOT included.
-        They are distributed as a separate Python package: pip install mcp-base-tools
+        NOTE: Utility scripts are NOT included. They are available via the mcp-base CLI:
+        pip install mcp-base && mcp-base --help
 
         Returns:
             JSON object containing:
