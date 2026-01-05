@@ -286,9 +286,25 @@ async def generate_server_scaffold_impl(
     a production-ready Kubernetes MCP server. Files are stored as artifacts
     and can be retrieved individually using get_artifact.
 
-    NOTE: Utility scripts are NOT included in the scaffold. They are available via the
-    mcp-base CLI to avoid context bloat. Install via: pip install mcp-base
-    Then run: mcp-base --help  # Shows: add-user, create-secrets, make-config, setup-oidc, setup-rbac
+    CRITICAL: COMPLETE FILE RETRIEVAL WORKFLOW
+    After calling this function, you MUST:
+    1. Iterate through ALL files in the returned "files" list
+    2. Call get_artifact(project_id, path) for EACH file
+    3. Write each file to the CURRENT DIRECTORY (.) preserving the path structure
+       - e.g., "src/my_server.py" -> write to ./src/my_server.py
+       - e.g., "bin/make-config.py" -> write to ./bin/make-config.py
+       - e.g., "chart/templates/ingress.yaml" -> write to ./chart/templates/ingress.yaml
+    4. Do NOT create a project subdirectory - write directly to . (current directory)
+
+    The scaffold includes:
+    - src/ - Server code, tools, auth modules
+    - bin/ - Configuration scripts (bin/make-config.py)
+    - chart/ - Complete Helm chart with ALL templates (deployment, service, ingress, etc.)
+    - test/ - Test framework with driver scripts and plugin tests
+    - Dockerfile, Makefile, requirements.txt
+
+    NOTE: Most utility scripts are available via the mcp-base CLI (pip install mcp-base).
+    Exception: bin/make-config.py IS included because it coordinates with Dockerfile/Makefile.
 
     CRITICAL USAGE RULES:
     1. NON-DEVIATION RULE: Use MCPBase scaffold artifacts as the ONLY source of project files.
@@ -560,7 +576,8 @@ class TestExampleTool(TestPlugin):
         "files": sorted(files.keys()),
         "resource_links": resource_links,
         "quick_start": [
-            f"Retrieve files: get_artifact(project_id='{project_id}', path='...')",
+            f"IMPORTANT: Retrieve ALL {len(files)} files using get_artifact() and write to current directory (.)",
+            f"For each path in files list: get_artifact(project_id='{project_id}', path=path) -> write to ./path",
             f"Implement your tools in src/{server_name_snake}_tools.py",
             "Install dependencies: pip install -r requirements.txt",
             f"Test locally: python src/{server_name_snake}_server.py --port {port}",

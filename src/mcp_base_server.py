@@ -58,8 +58,18 @@ production-ready MCP servers for Kubernetes environments.
 WORKFLOW for building MCP servers:
 1. Call generate_server_scaffold(server_name="...") to create the project
    - Returns project_id, file list, and resource links
-2. Use get_artifact(project_id, path) to retrieve individual files
-3. Use list_artifacts(project_id) to see all available files
+2. Use list_artifacts(project_id) to see all generated files
+3. IMPORTANT: Retrieve and write ALL files to the CURRENT DIRECTORY (.)
+   - Use get_artifact(project_id, path) for each file in the list
+   - Write each file to the exact path returned (e.g., src/..., bin/..., chart/...)
+   - Do NOT create a project subdirectory - use . as the root
+
+CRITICAL: You must retrieve and write ALL files from the scaffold, including:
+- src/ - Server code (entry point, tools, auth modules)
+- bin/ - Configuration scripts (bin/make-config.py)
+- chart/ - Complete Helm chart (all templates including ingress.yaml)
+- test/ - Test framework (test-mcp.py, plugins/, test drivers)
+- Dockerfile, Makefile, requirements.txt
 
 Available tools:
 - generate_server_scaffold: Create complete server project structure
@@ -76,10 +86,13 @@ NOTE: Utility scripts are available via the mcp-base CLI:
 Example workflow:
 1. result = generate_server_scaffold(server_name="My Server")
    project_id = result["project_id"]  # e.g., "my-server-abc12345"
+   files_list = result["files"]       # List of all file paths
 
-2. files = list_artifacts(project_id)
+2. For EACH file in files_list:
+   content = get_artifact(project_id, file_path)
+   Write content to ./file_path (preserving the directory structure)
 
-3. content = get_artifact(project_id, "src/my_server.py")
+3. Follow quick_start instructions for deployment
 """
 )
 
