@@ -117,6 +117,7 @@ async def list_templates_impl() -> str:
     # Utility templates
     result += "## Utility Templates\n"
     result += "- `Makefile.j2` - Build and deployment automation\n"
+    result += "- `bin/make-config.py.j2` - Configuration generator (coordinates with Dockerfile)\n"
     result += "- `test/test_runner.py.j2` - Test runner script\n"
     result += "- `test/plugin_base.py` - Test plugin base class (as-is)\n"
     result += "- `test/test_list_resources.py` - Test resource listing (as-is)\n"
@@ -125,10 +126,12 @@ async def list_templates_impl() -> str:
 
     # Note about utility scripts
     result += "\n## Utility Scripts (Separate Package)\n"
-    result += "Utility scripts are NOT included in the scaffold.\n"
-    result += "They are available via the mcp-base CLI:\n"
+    result += "Most utility scripts are available via the mcp-base CLI:\n"
     result += "  pip install mcp-base\n"
-    result += "  mcp-base --help  # Shows: add-user, create-secrets, make-config, setup-oidc, setup-rbac\n"
+    result += "  mcp-base --help  # Shows: add-user, create-secrets, setup-oidc, setup-rbac\n"
+    result += "\n"
+    result += "NOTE: bin/make-config.py IS included in the scaffold because it coordinates\n"
+    result += "with the Dockerfile and Makefile for building container images.\n"
 
     return result
 
@@ -383,8 +386,13 @@ async def generate_server_scaffold_impl(
         ("Makefile.j2", "Makefile"),
     ]
 
+    # Bin scripts (coordinate with Dockerfile/Makefile)
+    bin_templates = [
+        ("bin/make-config.py.j2", "bin/make-config.py"),
+    ]
+
     # Process template files
-    for template_path, output_path in server_templates + container_templates + makefile:
+    for template_path, output_path in server_templates + container_templates + makefile + bin_templates:
         try:
             template = jinja_env.get_template(template_path)
             files[output_path] = template.render(**variables)
@@ -556,9 +564,11 @@ class TestExampleTool(TestPlugin):
             f"Implement your tools in src/{server_name_snake}_tools.py",
             "Install dependencies: pip install -r requirements.txt",
             f"Test locally: python src/{server_name_snake}_server.py --port {port}",
-            "Build container: make build",
+            "Configure deployment: python bin/make-config.py (generates Auth0 config & Helm values)",
+            "Build and push container: make build && make push",
+            "Create secrets: mcp-base create-secrets --namespace <ns> --release-name <release>",
             "Deploy to Kubernetes: make helm-install",
-            "Utility scripts: pip install mcp-base && mcp-base --help"
+            "Other CLI tools: pip install mcp-base && mcp-base --help"
         ],
         "warnings": [],
         "truncated": False
