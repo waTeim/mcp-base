@@ -82,7 +82,7 @@ After writing all files, you should have:
 ./                                  # Current directory (NOT a subdirectory!)
 ├── src/
 │   ├── my_kubernetes_manager_server.py    # Main server entry point
-│   ├── my_kubernetes_manager_test_server.py
+│   ├── my_kubernetes_manager_test_server.py  # Test server (no auth)
 │   ├── my_kubernetes_manager_tools.py     # Your tools go here
 │   ├── auth_fastmcp.py
 │   ├── auth_oidc.py
@@ -116,8 +116,9 @@ After writing all files, you should have:
 │       ├── ingress.yaml              # Ingress IS included!
 │       ├── hpa.yaml
 │       └── NOTES.txt
-├── Dockerfile
-├── Makefile
+├── Dockerfile                        # Production container
+├── Dockerfile.test                   # Test container (no auth)
+├── Makefile                          # Includes build-test, push-test targets
 └── requirements.txt
 ```
 

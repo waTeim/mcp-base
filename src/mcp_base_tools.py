@@ -98,7 +98,8 @@ async def list_templates_impl() -> str:
 
     # Container templates
     result += "## Container Templates\n"
-    result += "- `container/Dockerfile.j2` - Multi-stage Docker build\n"
+    result += "- `container/Dockerfile.j2` - Production container build\n"
+    result += "- `container/Dockerfile.test.j2` - Test container build (no auth)\n"
     result += "- `container/requirements.txt` - Python dependencies (as-is)\n\n"
 
     # Helm templates
@@ -297,11 +298,14 @@ async def generate_server_scaffold_impl(
     4. Do NOT create a project subdirectory - write directly to . (current directory)
 
     The scaffold includes:
-    - src/ - Server code, tools, auth modules
+    - src/ - Server code, tools, auth modules, test server
     - bin/ - Configuration scripts (bin/make-config.py)
     - chart/ - Complete Helm chart with ALL templates (deployment, service, ingress, etc.)
     - test/ - Test framework with driver scripts and plugin tests
-    - Dockerfile, Makefile, requirements.txt
+    - Dockerfile - Production container
+    - Dockerfile.test - Test container (no auth, for CI/CD)
+    - Makefile - Build targets including: build, build-test, push, push-test, test
+    - requirements.txt
 
     NOTE: Most utility scripts are available via the mcp-base CLI (pip install mcp-base).
     Exception: bin/make-config.py IS included because it coordinates with Dockerfile/Makefile.
@@ -391,6 +395,7 @@ async def generate_server_scaffold_impl(
     # Container files
     container_templates = [
         ("container/Dockerfile.j2", "Dockerfile"),
+        ("container/Dockerfile.test.j2", "Dockerfile.test"),
     ]
 
     container_static = [
