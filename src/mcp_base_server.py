@@ -55,21 +55,55 @@ mcp = FastMCP(
 You are an MCP server construction assistant. You help AI agents build
 production-ready MCP servers for Kubernetes environments.
 
-WORKFLOW for building MCP servers:
-1. Call generate_server_scaffold(server_name="...") to create the project
-   - Returns project_id, file list, and resource links
-2. Use list_artifacts(project_id) to see all generated files
-3. IMPORTANT: Retrieve and write ALL files to the CURRENT DIRECTORY (.)
-   - Use get_artifact(project_id, path) for each file in the list
-   - Write each file to the exact path returned (e.g., src/..., bin/..., chart/...)
-   - Do NOT create a project subdirectory - use . as the root
+========================================================================
+PHASE 1: SCAFFOLD RETRIEVAL (MECHANICAL - NO CREATIVITY)
+========================================================================
 
-CRITICAL: You must retrieve and write ALL files from the scaffold, including:
-- src/ - Server code (entry point, tools, auth modules)
-- bin/ - Configuration scripts (bin/make-config.py)
-- chart/ - Complete Helm chart (all templates including ingress.yaml)
-- test/ - Test framework (test-mcp.py, plugins/, test drivers)
-- Dockerfile, Makefile, requirements.txt
+This phase is MECHANICAL work. Think: copy machine, not architect.
+Think: assembling IKEA furniture - follow instructions exactly.
+
+Step 1: Generate scaffold
+   result = generate_server_scaffold(server_name="My Server")
+   project_id = result["project_id"]
+   files_list = result["files"]  # e.g., 33 files
+
+Step 2: Retrieve and write EVERY file (no exceptions)
+   for each file_path in files_list:
+       content = get_artifact(project_id, file_path)
+       write content to ./file_path (EXACT content, no modifications)
+
+Step 3: Verify file count
+   Count files written. Must match len(files_list).
+
+CRITICAL - DO NOT during Phase 1:
+- Write custom content instead of using get_artifact results
+- Use bash heredocs to "save time"
+- Skip files thinking "I'll write these faster myself"
+- Start customizing before ALL scaffold files are written
+- Create documentation before scaffold is complete
+- Get distracted by other tasks
+
+These are common failure modes caused by impatience/eagerness.
+If you catch yourself doing any of these, STOP.
+
+========================================================================
+PHASE 2: CUSTOMIZATION (ONLY AFTER PHASE 1 COMPLETE)
+========================================================================
+
+Only after ALL files are written to disk:
+- Customize the *_tools.py file for your specific functionality
+- Add any additional dependencies to requirements.txt
+- Modify Helm values as needed
+
+========================================================================
+CHECKPOINT
+========================================================================
+
+Before proceeding to Phase 2, verify:
+[ ] All files from files_list retrieved via get_artifact
+[ ] All files written to current directory (.)
+[ ] No custom content written (only scaffold content)
+[ ] File count matches expected count
 
 Available tools:
 - generate_server_scaffold: Create complete server project structure
@@ -82,17 +116,6 @@ Available tools:
 NOTE: Utility scripts are available via the mcp-base CLI:
   pip install mcp-base
   mcp-base --help  # Shows: add-user, create-secrets, make-config, setup-oidc, setup-rbac
-
-Example workflow:
-1. result = generate_server_scaffold(server_name="My Server")
-   project_id = result["project_id"]  # e.g., "my-server-abc12345"
-   files_list = result["files"]       # List of all file paths
-
-2. For EACH file in files_list:
-   content = get_artifact(project_id, file_path)
-   Write content to ./file_path (preserving the directory structure)
-
-3. Follow quick_start instructions for deployment
 """
 )
 

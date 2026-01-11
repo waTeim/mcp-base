@@ -287,15 +287,40 @@ async def generate_server_scaffold_impl(
     a production-ready Kubernetes MCP server. Files are stored as artifacts
     and can be retrieved individually using get_artifact.
 
-    CRITICAL: COMPLETE FILE RETRIEVAL WORKFLOW
-    After calling this function, you MUST:
-    1. Iterate through ALL files in the returned "files" list
-    2. Call get_artifact(project_id, path) for EACH file
-    3. Write each file to the CURRENT DIRECTORY (.) preserving the path structure
-       - e.g., "src/my_server.py" -> write to ./src/my_server.py
-       - e.g., "bin/make-config.py" -> write to ./bin/make-config.py
-       - e.g., "chart/templates/ingress.yaml" -> write to ./chart/templates/ingress.yaml
-    4. Do NOT create a project subdirectory - write directly to . (current directory)
+    ========================================================================
+    PHASE 1: SCAFFOLD RETRIEVAL (MECHANICAL - NO CREATIVITY)
+    ========================================================================
+
+    This is MECHANICAL work. Think: copy machine, not architect.
+    Think: assembling IKEA furniture - follow instructions exactly.
+
+    REQUIRED STEPS (no exceptions):
+    1. Call this function to create the scaffold artifacts
+    2. Loop through EVERY file in the returned "files" list
+    3. For EACH file: content = get_artifact(project_id, path)
+    4. For EACH file: write EXACT content to ./path (current directory)
+    5. Verify file count matches expected
+
+    DO NOT during Phase 1:
+    - Write custom content instead of using get_artifact results
+    - Use bash heredocs to "save time"
+    - Skip files thinking "I'll write these faster myself"
+    - Start customizing before ALL scaffold files are written
+    - Create documentation before scaffold is complete
+    - Get distracted by other tasks
+
+    These are common failure modes caused by impatience/eagerness.
+    If you catch yourself doing any of these, STOP.
+
+    ========================================================================
+    PHASE 2: CUSTOMIZATION (ONLY AFTER PHASE 1 COMPLETE)
+    ========================================================================
+
+    Only AFTER all files are written to disk:
+    - Customize the *_tools.py file for your specific functionality
+    - Add any additional dependencies to requirements.txt
+
+    ========================================================================
 
     The scaffold includes:
     - src/ - Server code, tools, auth modules, test server
@@ -581,16 +606,22 @@ class TestExampleTool(TestPlugin):
         "files": sorted(files.keys()),
         "resource_links": resource_links,
         "quick_start": [
-            f"IMPORTANT: Retrieve ALL {len(files)} files using get_artifact() and write to current directory (.)",
-            f"For each path in files list: get_artifact(project_id='{project_id}', path=path) -> write to ./path",
+            "======== PHASE 1: SCAFFOLD RETRIEVAL (MECHANICAL) ========",
+            f"STEP 1: Loop through ALL {len(files)} files in the 'files' list above",
+            f"STEP 2: For EACH file: content = get_artifact(project_id='{project_id}', path=file_path)",
+            "STEP 3: For EACH file: write EXACT content to ./file_path (current directory)",
+            f"STEP 4: Verify {len(files)} files written to disk",
+            "",
+            "DO NOT: Write custom content, use bash heredocs, skip files, or start customizing early.",
+            "This is MECHANICAL work. Think: copy machine, not architect.",
+            "",
+            "======== PHASE 2: CUSTOMIZATION (ONLY AFTER PHASE 1) ========",
             f"Implement your tools in src/{server_name_snake}_tools.py",
             "Install dependencies: pip install -r requirements.txt",
             f"Test locally: python src/{server_name_snake}_server.py --port {port}",
-            "Configure deployment: python bin/make-config.py (generates Auth0 config & Helm values)",
-            "Build and push container: make build && make push",
-            "Create secrets: mcp-base create-secrets --namespace <ns> --release-name <release>",
-            "Deploy to Kubernetes: make helm-install",
-            "Other CLI tools: pip install mcp-base && mcp-base --help"
+            "Configure deployment: python bin/make-config.py",
+            "Build container: make build && make push",
+            "Deploy: make helm-install"
         ],
         "warnings": [],
         "truncated": False

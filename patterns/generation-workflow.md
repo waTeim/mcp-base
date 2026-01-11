@@ -2,63 +2,36 @@
 
 This pattern describes how to use mcp-base to generate a complete MCP server project.
 
-## Critical Concept: Artifact-Based Generation
+## Two-Phase Workflow
 
-**IMPORTANT**: The `generate_server_scaffold()` tool returns an artifact manifest - it does NOT write files directly to disk. You must:
-1. Call `generate_server_scaffold()` to create the artifact set
-2. Retrieve ALL files using `get_artifact(project_id, path)`
-3. Write each file to the CURRENT DIRECTORY (.) preserving paths
+The workflow is divided into two distinct phases with a clear checkpoint between them.
 
-### What Happens When You Call Generation Tools
+---
 
-```python
-# 1. Call generate_server_scaffold - creates artifacts in memory
-result = await session.call_tool("generate_server_scaffold", {
-    "server_name": "My Kubernetes Manager"
-})
-# Result: Returns project_id, file list, and metadata
-# Disk state: NO FILES CREATED YET
+## PHASE 1: SCAFFOLD RETRIEVAL (MECHANICAL - NO CREATIVITY)
 
-project_id = result["project_id"]   # e.g., "my-kubernetes-manager-abc12345"
-files = result["files"]             # List of all file paths
-
-# 2. Retrieve and write EACH file
-for file_path in files:
-    content = await session.call_tool("get_artifact", {
-        "project_id": project_id,
-        "path": file_path
-    })
-    # Write to current directory: ./{file_path}
-    write_file(f"./{file_path}", content)
-# Disk state: All files now exist in current directory
-```
-
-## Complete Generation Workflow
+**Mindset**: This is MECHANICAL work. Think: copy machine, not architect.
+Think: assembling IKEA furniture - follow instructions exactly.
 
 ### Step 1: Generate the Scaffold
 
 ```python
 result = await session.call_tool("generate_server_scaffold", {
-    "server_name": "My Kubernetes Manager",
-    "port": 4207,
-    "default_namespace": "default",
-    "operator_cluster_roles": "cluster-admin",
-    "include_helm": True,
-    "include_test": True
+    "server_name": "My Kubernetes Manager"
 })
 
-project_id = result["project_id"]
-files_list = result["files"]
-print(f"Generated {len(files_list)} files")
+project_id = result["project_id"]   # e.g., "my-kubernetes-manager-abc12345"
+files = result["files"]             # List of ALL file paths (e.g., 33 files)
+file_count = result["file_count"]   # Expected count
 ```
 
-### Step 2: Retrieve and Write ALL Files
+### Step 2: Retrieve and Write EVERY File
 
-**CRITICAL**: You MUST retrieve and write ALL files, not just a subset.
+**This loop is MANDATORY. No exceptions. No shortcuts.**
 
 ```python
-for file_path in files_list:
-    # Get file content from artifact store
+for file_path in files:
+    # Get EXACT content from artifact store
     content = await session.call_tool("get_artifact", {
         "project_id": project_id,
         "path": file_path
@@ -69,14 +42,55 @@ for file_path in files_list:
     if parent_dir:
         os.makedirs(parent_dir, exist_ok=True)
 
-    # Write to current directory
+    # Write EXACT content to current directory
     with open(file_path, "w") as f:
         f.write(content)
+
+    print(f"✓ {file_path}")
 ```
 
-### Step 3: Verify the Directory Structure
+### Step 3: Verify File Count
 
-After writing all files, you should have:
+```bash
+find . -type f | wc -l  # Must match file_count
+```
+
+---
+
+## CRITICAL: DO NOT During Phase 1
+
+These are common failure modes caused by impatience/eagerness:
+
+| Anti-Pattern | Why It's Wrong |
+|-------------|----------------|
+| Write custom content instead of using get_artifact | Scaffold content is tested and complete |
+| Use bash heredocs to "save time" | Creates inconsistent, untested files |
+| Skip files thinking "I'll write these faster myself" | Missing files cause deployment failures |
+| Start customizing before ALL files are written | Leads to confusion about what was scaffold vs custom |
+| Create documentation before scaffold is complete | Distraction from the core task |
+| Get distracted by other tasks | Focus destroyer - complete Phase 1 first |
+
+**If you catch yourself doing any of these, STOP immediately.**
+
+---
+
+## CHECKPOINT: Phase 1 Complete?
+
+Before proceeding to Phase 2, verify:
+
+- [ ] All files from files list retrieved via get_artifact
+- [ ] All files written to current directory (.)
+- [ ] No custom content written (only scaffold content)
+- [ ] File count matches expected count
+- [ ] Directory structure matches expected structure (see below)
+
+**DO NOT proceed to Phase 2 until all checkboxes are true.**
+
+---
+
+## Expected Directory Structure
+
+After Phase 1, you should have:
 
 ```
 ./                                  # Current directory (NOT a subdirectory!)
@@ -113,7 +127,7 @@ After writing all files, you should have:
 │       ├── prompts-configmap.yaml
 │       ├── serviceaccount.yaml
 │       ├── rolebinding.yaml
-│       ├── ingress.yaml              # Ingress IS included!
+│       ├── ingress.yaml
 │       ├── hpa.yaml
 │       └── NOTES.txt
 ├── Dockerfile                        # Production container
@@ -122,12 +136,84 @@ After writing all files, you should have:
 └── requirements.txt
 ```
 
+---
+
+## PHASE 2: CUSTOMIZATION (ONLY AFTER PHASE 1 COMPLETE)
+
+**Mindset**: Now you can be creative. But only AFTER Phase 1 is 100% complete.
+
+### Step 1: Implement Your Tools
+
+Edit `src/*_tools.py` to add your specific functionality:
+
+```python
+# In src/my_kubernetes_manager_tools.py
+
+@mcp.tool()
+async def list_pods(namespace: str = "default") -> str:
+    """List pods in a namespace."""
+    # Your implementation here
+    pass
+```
+
+### Step 2: Add Dependencies (if needed)
+
+```bash
+echo "kubernetes" >> requirements.txt
+```
+
+### Step 3: Test Locally
+
+```bash
+pip install -r requirements.txt
+python src/my_kubernetes_manager_server.py --port 4207
+```
+
+### Step 4: Deploy
+
+```bash
+python bin/make-config.py
+make build && make push
+make helm-install
+```
+
+---
+
+## Common Mistakes (All Violate Phase 1 Rules)
+
+### ❌ "I only retrieved src/ files"
+
+**Problem**: Impatience led to skipping files.
+**Solution**: The loop must iterate through EVERY file in the list. No exceptions.
+
+### ❌ "I wrote my own Dockerfile"
+
+**Problem**: Eagerness to "improve" led to deviation from scaffold.
+**Solution**: Use EXACT content from get_artifact. Customize in Phase 2 if needed.
+
+### ❌ "I created a project subdirectory"
+
+**Problem**: Writing to `./my-kubernetes-manager/src/...` instead of `./src/...`
+**Solution**: Write to current directory (.) using exact paths from files list.
+
+### ❌ "I used bash heredocs to write files faster"
+
+**Problem**: Bypassing get_artifact creates untested, inconsistent files.
+**Solution**: Always use get_artifact to retrieve scaffold content.
+
+### ❌ "I started adding my tools before all files were written"
+
+**Problem**: Mixing Phase 1 and Phase 2 causes confusion.
+**Solution**: Complete ALL of Phase 1 before starting Phase 2.
+
+---
+
 ## Utility Scripts
 
 ### Scripts in Scaffold vs mcp-base CLI
 
 **Included in scaffold:**
-- `bin/make-config.py` - Generates Auth0 config and Helm values (coordinates with Dockerfile/Makefile)
+- `bin/make-config.py` - Generates Auth0 config and Helm values
 
 **Available via mcp-base CLI** (not in scaffold):
 ```bash
@@ -137,92 +223,17 @@ mcp-base --help
 # Available commands:
 mcp-base add-user          # Add Auth0 users
 mcp-base create-secrets    # Create Kubernetes secrets
-mcp-base setup-oidc        # Configure OIDC provider (Auth0, etc.)
+mcp-base setup-oidc        # Configure OIDC provider
 mcp-base setup-rbac        # Set up Kubernetes RBAC
 ```
 
-## Common Mistakes
+---
 
-### ❌ "I only retrieved src/ files"
+## Summary: The Golden Rule
 
-**Problem**: The scaffold includes critical files in bin/, test/, chart/, and root directory.
+**Phase 1 is MECHANICAL. Phase 2 is CREATIVE.**
 
-**Solution**: Always iterate through the ENTIRE `files` list and retrieve every file.
+In Phase 1, you are a copy machine. You retrieve and write. Nothing more.
+In Phase 2, you are an architect. You customize and extend.
 
-### ❌ "I created a project subdirectory"
-
-**Problem**: Writing to `./my-kubernetes-manager/src/...` instead of `./src/...`
-
-**Solution**: Write files directly to the current directory (.) using the exact paths from the files list.
-
-### ❌ "The ingress template is missing"
-
-**Problem**: User didn't retrieve all files from the artifact store.
-
-**Solution**: The ingress template IS included at `chart/templates/ingress.yaml`. Make sure you retrieve ALL files.
-
-### ❌ "The test directory only has plugins/"
-
-**Problem**: User only retrieved some test files.
-
-**Solution**: The test/ directory includes:
-- `test/test-mcp.py` - Main test runner
-- `test/get-user-token.py` - Token helper
-- `test/mcp-auth-proxy.py` - Auth proxy
-- `test/plugins/__init__.py` - Plugin base
-- `test/plugins/test_*.py` - Test plugins
-
-Retrieve ALL of these files.
-
-## Deployment Workflow
-
-After writing all files:
-
-```bash
-# 1. Generate configuration (creates auth0-config.json, helm-values.yaml)
-python bin/make-config.py
-
-# 2. Install dependencies
-pip install -r requirements.txt
-
-# 3. Test locally
-python src/my_kubernetes_manager_server.py --port 4207
-
-# 4. Build and push container
-make build
-make push
-
-# 5. Create Kubernetes secrets
-pip install mcp-base
-mcp-base create-secrets --namespace mcp --release-name my-kubernetes-manager
-
-# 6. Deploy with Helm
-make helm-install
-```
-
-## Understanding the Generated Code
-
-### What You Get vs What You Must Add
-
-**Generated automatically:**
-- Server entry points (main + test servers)
-- Authentication middleware (OAuth + OIDC)
-- Context extraction and user hashing
-- Test framework structure with base plugins
-- Complete Helm chart with all templates (including ingress!)
-- Dockerfile and build configuration
-- Configuration generator (bin/make-config.py)
-
-**You must add:**
-- Actual tool implementations in `*_tools.py`
-- Kubernetes API client code for your operations
-- Resource registrations for your configuration data
-- Test plugins for your custom tools
-
-## Best Practices
-
-1. **Always retrieve ALL files** - Don't skip files thinking they're optional
-2. **Write to current directory (.)** - Don't create a project subdirectory
-3. **Use bin/make-config.py** - Generates configuration before deployment
-4. **Use mcp-base CLI** - For other utility tasks (create-secrets, setup-rbac, etc.)
-5. **Verify file count** - Check that files written matches `file_count` in result
+Never mix the two phases.

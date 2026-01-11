@@ -3,18 +3,31 @@
 {{ server_name }} MCP Server - Configuration Generator
 
 Creates configuration files required for deployment:
-1. auth0-config.json - Auth0 application credentials
+1. oidc-config.json - OIDC provider credentials
 2. helm-values.yaml - Customized Helm values
 
+Supports multiple OIDC providers:
+- auth0: Auth0 (default)
+- dex: Dex IdP
+- keycloak: Keycloak
+- okta: Okta
+- generic: Any OIDC-compliant provider
+
 Usage:
-    # Interactive mode - prompts for all values
+    # Interactive mode - prompts for provider and all values
     python make-config.py
+
+    # Specify provider
+    python make-config.py --provider dex
 
     # From environment variables
     python make-config.py --from-env
 
-    # Specify values directly
-    python make-config.py --domain your-tenant.auth0.com --client-id xxx --client-secret yyy
+    # Specify values directly (Auth0)
+    python make-config.py --provider auth0 --domain your-tenant.auth0.com --client-id xxx --client-secret yyy
+
+    # Specify values directly (Dex/Generic)
+    python make-config.py --provider dex --issuer https://dex.example.com --client-id xxx --client-secret yyy
 
     # Output to specific directory
     python make-config.py --output-dir ./config
@@ -25,8 +38,12 @@ import sys
 import json
 import argparse
 from pathlib import Path
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 from urllib.parse import urlparse
+
+
+# Supported OIDC providers
+PROVIDERS = ["auth0", "dex", "keycloak", "okta", "generic"]
 
 
 def get_env_or_prompt(
@@ -65,15 +82,50 @@ def get_env_or_prompt(
     return default
 
 
-def validate_domain(domain: str) -> bool:
-    """Validate Auth0 domain format."""
-    if not domain:
-        return False
-    # Should be like: your-tenant.auth0.com or your-tenant.us.auth0.com
-    if '.auth0.com' not in domain and '.auth0.co' not in domain:
-        print(f"    Warning: Domain '{domain}' doesn't look like an Auth0 domain")
-        return True  # Allow custom domains
-    return True
+def select_provider(args: Optional[argparse.Namespace] = None) -> str:
+    """Select OIDC provider interactively or from args."""
+    if args and args.provider:
+        provider = args.provider.lower()
+        if provider not in PROVIDERS:
+            print(f"Error: Unknown provider '{provider}'. Supported: {', '.join(PROVIDERS)}")
+            sys.exit(1)
+        return provider
+
+    # Check environment variable
+    env_provider = os.environ.get("OIDC_PROVIDER", "").lower()
+    if env_provider:
+        if env_provider not in PROVIDERS:
+            print(f"Error: Unknown provider '{env_provider}'. Supported: {', '.join(PROVIDERS)}")
+            sys.exit(1)
+        print(f"  OIDC Provider: {env_provider} (from OIDC_PROVIDER)")
+        return env_provider
+
+    # Interactive selection
+    if sys.stdin.isatty():
+        print("\n  Select OIDC Provider:")
+        for i, p in enumerate(PROVIDERS, 1):
+            desc = {
+                "auth0": "Auth0 (cloud-hosted)",
+                "dex": "Dex (self-hosted, Kubernetes-native)",
+                "keycloak": "Keycloak (self-hosted)",
+                "okta": "Okta (cloud-hosted)",
+                "generic": "Generic OIDC provider"
+            }.get(p, p)
+            print(f"    {i}. {p} - {desc}")
+
+        while True:
+            choice = input("  Enter number [1]: ").strip()
+            if not choice:
+                return "auth0"
+            try:
+                idx = int(choice) - 1
+                if 0 <= idx < len(PROVIDERS):
+                    return PROVIDERS[idx]
+            except ValueError:
+                pass
+            print("    Invalid choice, try again")
+    else:
+        return "auth0"  # Default in non-interactive mode
 
 
 def validate_url(url: str, name: str) -> bool:
@@ -102,10 +154,22 @@ class ConfigGenerator:
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self.config: Dict[str, Any] = {}
 
-    def collect_auth0_config(self, from_env: bool = False, args: Optional[argparse.Namespace] = None) -> Dict[str, Any]:
-        """Collect Auth0 configuration."""
-        print("\n=== Auth0 Configuration ===")
+    def collect_oidc_config(
+        self,
+        provider: str,
+        from_env: bool = False,
+        args: Optional[argparse.Namespace] = None
+    ) -> Dict[str, Any]:
+        """Collect OIDC configuration based on provider."""
+        print(f"\n=== OIDC Configuration ({provider}) ===")
 
+        if provider == "auth0":
+            return self._collect_auth0_config(args)
+        else:
+            return self._collect_generic_oidc_config(provider, args)
+
+    def _collect_auth0_config(self, args: Optional[argparse.Namespace] = None) -> Dict[str, Any]:
+        """Collect Auth0-specific configuration."""
         # Domain
         domain = args.domain if args and args.domain else None
         if not domain:
@@ -114,7 +178,10 @@ class ConfigGenerator:
                 "Auth0 Domain (e.g., your-tenant.auth0.com)",
                 required=True
             )
-        validate_domain(domain)
+
+        # Validate domain format
+        if domain and '.auth0.com' not in domain and '.auth0.co' not in domain:
+            print(f"    Warning: Domain '{domain}' doesn't look like an Auth0 domain")
 
         # Client ID
         client_id = args.client_id if args and args.client_id else None
@@ -138,7 +205,7 @@ class ConfigGenerator:
         # API Audience
         audience = args.audience if args and args.audience else None
         if not audience:
-            default_audience = f"https://{self.SERVER_NAME_SNAKE}.example.com/mcp"
+            default_audience = f"https://{self.SERVER_NAME_SNAKE.replace('_', '-')}.example.com/mcp"
             audience = get_env_or_prompt(
                 "AUTH0_AUDIENCE",
                 "Auth0 API Audience",
@@ -146,16 +213,104 @@ class ConfigGenerator:
                 default=default_audience
             )
 
-        # Build issuer URL
+        # Build issuer URL (Auth0 format)
         issuer = f"https://{domain}/"
 
         return {
-            "domain": domain,
-            "client_id": client_id,
-            "client_secret": client_secret,
+            "provider": "auth0",
+            "issuer": issuer,
             "audience": audience,
-            "issuer": issuer
+            "server_client": {
+                "client_id": client_id,
+                "client_secret": client_secret
+            },
+            # Auth0-specific extras
+            "domain": domain
         }
+
+    def _collect_generic_oidc_config(
+        self,
+        provider: str,
+        args: Optional[argparse.Namespace] = None
+    ) -> Dict[str, Any]:
+        """Collect generic OIDC configuration (Dex, Keycloak, Okta, etc.)."""
+        # Issuer URL
+        issuer = args.issuer if args and args.issuer else None
+        if not issuer:
+            example = {
+                "dex": "https://dex.example.com",
+                "keycloak": "https://keycloak.example.com/realms/myrealm",
+                "okta": "https://your-org.okta.com",
+                "generic": "https://idp.example.com"
+            }.get(provider, "https://idp.example.com")
+
+            issuer = get_env_or_prompt(
+                "OIDC_ISSUER",
+                f"Issuer URL (e.g., {example})",
+                required=True
+            )
+        validate_url(issuer, "Issuer URL")
+
+        # Normalize issuer (remove trailing slash for consistency)
+        issuer = issuer.rstrip("/")
+
+        # Client ID
+        client_id = args.client_id if args and args.client_id else None
+        if not client_id:
+            client_id = get_env_or_prompt(
+                "OIDC_CLIENT_ID",
+                "Client ID",
+                required=True
+            )
+
+        # Client Secret
+        client_secret = args.client_secret if args and args.client_secret else None
+        if not client_secret:
+            client_secret = get_env_or_prompt(
+                "OIDC_CLIENT_SECRET",
+                "Client Secret",
+                required=True,
+                secret=True
+            )
+
+        # API Audience
+        audience = args.audience if args and args.audience else None
+        if not audience:
+            default_audience = f"https://{self.SERVER_NAME_SNAKE.replace('_', '-')}.example.com/mcp"
+            audience = get_env_or_prompt(
+                "OIDC_AUDIENCE",
+                "API Audience (identifier for this API)",
+                required=True,
+                default=default_audience
+            )
+
+        config = {
+            "provider": provider,
+            "issuer": issuer,
+            "audience": audience,
+            "server_client": {
+                "client_id": client_id,
+                "client_secret": client_secret
+            }
+        }
+
+        # Optional: Custom endpoints (some providers need explicit endpoints)
+        if sys.stdin.isatty():
+            custom_endpoints = input("  Configure custom endpoints? [y/N]: ").strip().lower()
+            if custom_endpoints == "y":
+                auth_endpoint = input(f"    Authorization endpoint [{issuer}/auth]: ").strip()
+                if auth_endpoint:
+                    config["authorization_endpoint"] = auth_endpoint
+
+                token_endpoint = input(f"    Token endpoint [{issuer}/token]: ").strip()
+                if token_endpoint:
+                    config["token_endpoint"] = token_endpoint
+
+                jwks_uri = input(f"    JWKS URI [{issuer}/.well-known/jwks.json]: ").strip()
+                if jwks_uri:
+                    config["jwks_uri"] = jwks_uri
+
+        return config
 
     def collect_kubernetes_config(self, args: Optional[argparse.Namespace] = None) -> Dict[str, Any]:
         """Collect Kubernetes deployment configuration."""
@@ -184,18 +339,11 @@ class ConfigGenerator:
             "release_name": release_name
         }
 
-    def generate_auth0_config_json(self, auth0_config: Dict[str, Any]) -> Path:
-        """Generate auth0-config.json file."""
-        config = {
-            "domain": auth0_config["domain"],
-            "client_id": auth0_config["client_id"],
-            "client_secret": auth0_config["client_secret"],
-            "audience": auth0_config["audience"]
-        }
-
-        output_path = self.output_dir / "auth0-config.json"
+    def generate_oidc_config_json(self, oidc_config: Dict[str, Any]) -> Path:
+        """Generate oidc-config.json file."""
+        output_path = self.output_dir / "oidc-config.json"
         with open(output_path, 'w') as f:
-            json.dump(config, f, indent=2)
+            json.dump(oidc_config, f, indent=2)
 
         # Set restrictive permissions
         os.chmod(output_path, 0o600)
@@ -204,27 +352,44 @@ class ConfigGenerator:
         print(f"    Permissions: 600 (owner read/write only)")
         return output_path
 
-    def generate_env_file(self, auth0_config: Dict[str, Any], k8s_config: Dict[str, Any]) -> Path:
+    def generate_env_file(self, oidc_config: Dict[str, Any], k8s_config: Dict[str, Any]) -> Path:
         """Generate .env file for local development."""
+        provider = oidc_config.get("provider", "generic")
+        client = oidc_config.get("server_client", {})
+
         env_content = f'''# {{ server_name }} MCP Server - Environment Configuration
 # Generated by make-config.py
 # DO NOT commit this file to version control!
 
-# Auth0 Configuration
-OIDC_ISSUER={auth0_config["issuer"]}
-OIDC_AUDIENCE={auth0_config["audience"]}
-AUTH0_DOMAIN={auth0_config["domain"]}
-AUTH0_CLIENT_ID={auth0_config["client_id"]}
-AUTH0_CLIENT_SECRET={auth0_config["client_secret"]}
+# OIDC Configuration ({provider})
+OIDC_PROVIDER={provider}
+OIDC_ISSUER={oidc_config["issuer"]}
+OIDC_AUDIENCE={oidc_config["audience"]}
+OIDC_CLIENT_ID={client.get("client_id", "")}
+OIDC_CLIENT_SECRET={client.get("client_secret", "")}
+'''
 
+        # Add provider-specific vars for Auth0
+        if provider == "auth0" and "domain" in oidc_config:
+            env_content += f'''
+# Auth0-specific
+AUTH0_DOMAIN={oidc_config["domain"]}
+'''
+
+        # Add optional endpoints if specified
+        if "authorization_endpoint" in oidc_config:
+            env_content += f'OIDC_AUTHORIZATION_ENDPOINT={oidc_config["authorization_endpoint"]}\n'
+        if "token_endpoint" in oidc_config:
+            env_content += f'OIDC_TOKEN_ENDPOINT={oidc_config["token_endpoint"]}\n'
+        if "jwks_uri" in oidc_config:
+            env_content += f'OIDC_JWKS_URI={oidc_config["jwks_uri"]}\n'
+
+        env_content += f'''
 # Kubernetes Configuration
 K8S_NAMESPACE={k8s_config["namespace"]}
 
 # Server Configuration
 PORT={self.DEFAULT_PORT}
-
-# Redis Configuration (for local development)
-REDIS_URL=redis://localhost:6379/0
 '''
 
         output_path = self.output_dir / ".env"
@@ -238,32 +403,49 @@ REDIS_URL=redis://localhost:6379/0
         print(f"    Permissions: 600 (owner read/write only)")
         return output_path
 
-    def generate_helm_values(self, auth0_config: Dict[str, Any], k8s_config: Dict[str, Any]) -> Path:
+    def generate_helm_values(self, oidc_config: Dict[str, Any], k8s_config: Dict[str, Any]) -> Path:
         """Generate custom Helm values file."""
+        provider = oidc_config.get("provider", "generic")
+        client = oidc_config.get("server_client", {})
+
         values_content = f'''# {{ server_name }} MCP Server - Helm Values
 # Generated by make-config.py
+# Provider: {provider}
 # Use with: helm install {k8s_config["release_name"]} chart/ -f helm-values.yaml
 
 replicaCount: 1
 
 image:
-  repository: {self.SERVER_NAME_SNAKE.replace("_", "-")}
+  repository: {self.SERVER_NAME_SNAKE.replace("_", "-")}-server
   tag: latest
   pullPolicy: IfNotPresent
 
+# OIDC Configuration
 oidc:
-  issuer: "{auth0_config["issuer"]}"
-  audience: "{auth0_config["audience"]}"
+  # OIDC issuer URL
+  issuer: "{oidc_config["issuer"]}"
 
-# Auth0 credentials - these will be read from Kubernetes secrets
-# Run: mcp-base create-secrets --namespace {k8s_config["namespace"]}
+  # API audience (identifier)
+  audience: "{oidc_config["audience"]}"
 
-redis:
-  enabled: true
-  architecture: standalone
-  auth:
-    enabled: false
+  # OAuth client ID for MCP server
+  clientId: "{client.get("client_id", "")}"
 
+  # NOTE: Client secret is automatically loaded from Kubernetes secret
+  #   Secret name: <release-name>-oidc-credentials
+  #   Secret key: server-client-secret
+  # Create the secret with:
+  #   mcp-base create-secrets --namespace {k8s_config["namespace"]} --release-name {k8s_config["release_name"]}
+'''
+
+        # Add optional endpoint overrides
+        if "jwks_uri" in oidc_config:
+            values_content += f'''
+  # Custom JWKS URI (override if provider doesn't use standard discovery)
+  jwksUri: "{oidc_config["jwks_uri"]}"
+'''
+
+        values_content += f'''
 service:
   type: ClusterIP
   port: {self.DEFAULT_PORT}
@@ -271,11 +453,21 @@ service:
 ingress:
   enabled: false
   # className: nginx
-  # hosts:
-  #   - host: {self.SERVER_NAME_SNAKE.replace("_", "-")}.example.com
-  #     paths:
-  #       - path: /
-  #         pathType: Prefix
+  # annotations:
+  #   cert-manager.io/cluster-issuer: "letsencrypt"
+  # host: {self.SERVER_NAME_SNAKE.replace("_", "-")}.example.com
+  # path: /
+  # pathType: Prefix
+  # tls:
+  #   enabled: true
+
+resources:
+  requests:
+    memory: "256Mi"
+    cpu: "100m"
+  limits:
+    memory: "512Mi"
+    cpu: "500m"
 '''
 
         output_path = self.output_dir / "helm-values.yaml"
@@ -290,7 +482,8 @@ ingress:
         gitignore_content = '''# {{ server_name }} MCP Server - Sensitive files
 # Add these lines to your .gitignore
 
-# Auth0 configuration (contains secrets)
+# OIDC configuration (contains secrets)
+oidc-config.json
 auth0-config.json
 
 # Environment files
@@ -317,7 +510,35 @@ helm-values.yaml
 
 def main():
     parser = argparse.ArgumentParser(
-        description=f"Generate configuration files for {ConfigGenerator.SERVER_NAME} MCP Server"
+        description=f"Generate configuration files for {ConfigGenerator.SERVER_NAME} MCP Server",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Supported OIDC Providers:
+  auth0     - Auth0 (cloud-hosted)
+  dex       - Dex (self-hosted, Kubernetes-native)
+  keycloak  - Keycloak (self-hosted)
+  okta      - Okta (cloud-hosted)
+  generic   - Any OIDC-compliant provider
+
+Examples:
+  # Interactive mode
+  python make-config.py
+
+  # Auth0
+  python make-config.py --provider auth0 --domain tenant.auth0.com
+
+  # Dex
+  python make-config.py --provider dex --issuer https://dex.example.com
+
+  # From environment
+  OIDC_PROVIDER=dex OIDC_ISSUER=https://dex.example.com python make-config.py --from-env
+"""
+    )
+
+    parser.add_argument(
+        "--provider",
+        choices=PROVIDERS,
+        help="OIDC provider (auth0, dex, keycloak, okta, generic)"
     )
 
     parser.add_argument(
@@ -333,11 +554,14 @@ def main():
         help="Directory to write configuration files (default: current directory)"
     )
 
-    # Auth0 options
+    # Auth0-specific options
     parser.add_argument("--domain", help="Auth0 domain (e.g., your-tenant.auth0.com)")
-    parser.add_argument("--client-id", help="Auth0 client ID")
-    parser.add_argument("--client-secret", help="Auth0 client secret")
-    parser.add_argument("--audience", help="Auth0 API audience")
+
+    # Generic OIDC options
+    parser.add_argument("--issuer", help="OIDC issuer URL")
+    parser.add_argument("--client-id", help="OAuth client ID")
+    parser.add_argument("--client-secret", help="OAuth client secret")
+    parser.add_argument("--audience", help="API audience")
 
     # Kubernetes options
     parser.add_argument("--namespace", help="Kubernetes namespace")
@@ -359,22 +583,26 @@ def main():
 
     print(f"=== {ConfigGenerator.SERVER_NAME} Configuration Generator ===")
 
+    # Select provider
+    provider = select_provider(args)
+    print(f"\n  Using OIDC Provider: {provider}")
+
     generator = ConfigGenerator(output_dir=args.output_dir)
 
     # Collect configurations
-    auth0_config = generator.collect_auth0_config(from_env=args.from_env, args=args)
+    oidc_config = generator.collect_oidc_config(provider=provider, from_env=args.from_env, args=args)
     k8s_config = generator.collect_kubernetes_config(args=args)
 
     # Generate files
     print("\n=== Generating Configuration Files ===")
 
-    generator.generate_auth0_config_json(auth0_config)
+    generator.generate_oidc_config_json(oidc_config)
 
     if not args.skip_env:
-        generator.generate_env_file(auth0_config, k8s_config)
+        generator.generate_env_file(oidc_config, k8s_config)
 
     if not args.skip_helm:
-        generator.generate_helm_values(auth0_config, k8s_config)
+        generator.generate_helm_values(oidc_config, k8s_config)
 
     generator.generate_gitignore_entries()
 
@@ -388,7 +616,7 @@ def main():
     print(f"4. Deploy with Helm:")
     print(f"   helm install {k8s_config['release_name']} chart/ -f helm-values.yaml")
     print(f"\nFor local development:")
-    print(f"   source .env && python src/{ConfigGenerator.SERVER_NAME_SNAKE}.py")
+    print(f"   source .env && python src/{ConfigGenerator.SERVER_NAME_SNAKE}_server.py")
 
 
 if __name__ == "__main__":
