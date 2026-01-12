@@ -118,7 +118,7 @@ async def list_templates_impl() -> str:
     # Utility templates
     result += "## Utility Templates\n"
     result += "- `Makefile.j2` - Build and deployment automation\n"
-    result += "- `bin/make-config.py.j2` - Configuration generator (coordinates with Dockerfile)\n"
+    result += "- `bin/configure-make.py.j2` - Makefile configuration generator (creates make.env)\n"
     result += "- `test/test_runner.py.j2` - Test runner script\n"
     result += "- `test/plugin_base.py` - Test plugin base class (as-is)\n"
     result += "- `test/test_list_resources.py` - Test resource listing (as-is)\n"
@@ -131,8 +131,9 @@ async def list_templates_impl() -> str:
     result += "  pip install mcp-base\n"
     result += "  mcp-base --help  # Shows: add-user, create-secrets, setup-oidc, setup-rbac\n"
     result += "\n"
-    result += "NOTE: bin/make-config.py IS included in the scaffold because it coordinates\n"
-    result += "with the Dockerfile and Makefile for building container images.\n"
+    result += "NOTE: bin/configure-make.py IS included in the scaffold to generate make.env\n"
+    result += "for configuring the Makefile (registry, image names, namespace, etc.).\n"
+    result += "For OIDC/auth setup, use: mcp-base setup-oidc\n"
 
     return result
 
@@ -337,7 +338,7 @@ async def generate_server_scaffold_impl(
 
     The scaffold includes:
     - src/ - Server code, tools, auth modules, test server
-    - bin/ - Configuration scripts (bin/make-config.py)
+    - bin/ - Configuration scripts (bin/configure-make.py)
     - chart/ - Complete Helm chart with ALL templates (deployment, service, ingress, etc.)
     - test/ - Test framework with driver scripts and plugin tests
     - Dockerfile - Production container
@@ -346,7 +347,8 @@ async def generate_server_scaffold_impl(
     - requirements.txt
 
     NOTE: Most utility scripts are available via the mcp-base CLI (pip install mcp-base).
-    Exception: bin/make-config.py IS included because it coordinates with Dockerfile/Makefile.
+    Exception: bin/configure-make.py IS included to generate make.env for Makefile config.
+    For OIDC/auth setup, use: mcp-base setup-oidc
 
     CRITICAL USAGE RULES:
     1. NON-DEVIATION RULE: Use MCPBase scaffold artifacts as the ONLY source of project files.
@@ -447,7 +449,7 @@ async def generate_server_scaffold_impl(
 
     # Bin scripts (coordinate with Dockerfile/Makefile)
     bin_templates = [
-        ("bin/make-config.py.j2", "bin/make-config.py"),
+        ("bin/configure-make.py.j2", "bin/configure-make.py"),
     ]
 
     # Process template files
@@ -635,7 +637,7 @@ class TestExampleTool(TestPlugin):
             f"Only after {len(files)} files verified on disk:",
             f"  - Customize src/{server_name_snake}_tools.py",
             f"  - Test: python src/{server_name_snake}_server.py --port {port}",
-            "  - Configure: python bin/make-config.py",
+            "  - Configure: python bin/configure-make.py  # Then: mcp-base setup-oidc",
             "  - Deploy: make build && make push && make helm-install"
         ],
         "warnings": [],

@@ -104,12 +104,8 @@ my-server/
 │   ├── auth_oidc.py           # OIDC middleware
 │   ├── mcp_context.py         # User context extraction
 │   └── prompt_registry.py     # Versioned prompt management
-├── bin/                       # Utility scripts (Python only!)
-│   ├── add-user.py           # Add Auth0 users with roles
-│   ├── create-secrets.py     # Create K8s secrets
-│   ├── make-config.py        # Generate config files
-│   ├── setup-auth0.py        # Configure Auth0 tenant
-│   └── setup-rbac.py         # Set up K8s RBAC
+├── bin/                       # Configuration scripts
+│   └── configure-make.py     # Generate make.env for Makefile
 ├── test/
 │   ├── plugins/               # Test plugins
 │   ├── test-mcp.py           # Test runner
@@ -120,17 +116,22 @@ my-server/
 └── requirements.txt
 ```
 
-### Bin Scripts (Python Only)
+### Scaffold vs CLI Scripts
 
-**⚠️ IMPORTANT**: The `bin/` directory must contain ONLY Python scripts (`.py`). Shell scripts (`.sh`) are NOT allowed.
+**In scaffold (`bin/`):**
 
 | Script | Purpose |
 |--------|---------|
-| `add-user.py` | Add Auth0 users with assigned roles |
-| `create-secrets.py` | Create Kubernetes secrets from auth0-config.json |
-| `make-config.py` | Generate auth0-config.json and helm-values.yaml |
-| `setup-auth0.py` | Configure Auth0 tenant (applications, APIs, roles) |
-| `setup-rbac.py` | Set up Kubernetes RBAC resources |
+| `configure-make.py` | Generate make.env for Makefile configuration |
+
+**Via mcp-base CLI** (install with `pip install mcp-base`):
+
+| Command | Purpose |
+|---------|---------|
+| `mcp-base setup-oidc` | Configure OIDC provider (Auth0, Dex, Keycloak, etc.) |
+| `mcp-base create-secrets` | Create Kubernetes secrets |
+| `mcp-base add-user` | Add users with assigned roles |
+| `mcp-base setup-rbac` | Set up Kubernetes RBAC resources |
 
 ## Configuration Options
 

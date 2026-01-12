@@ -113,7 +113,7 @@ After Phase 1, you should have:
 │   ├── prompt_registry.py
 │   └── user_hash.py
 ├── bin/
-│   └── make-config.py              # Configuration generator
+│   └── configure-make.py           # Makefile configuration (creates make.env)
 ├── test/
 │   ├── test-mcp.py                 # Test runner
 │   ├── get-user-token.py           # Token helper
@@ -181,7 +181,8 @@ python src/my_kubernetes_manager_server.py --port 4207
 ### Step 4: Deploy
 
 ```bash
-python bin/make-config.py
+python bin/configure-make.py
+mcp-base setup-oidc
 make build && make push
 make helm-install
 ```
@@ -222,7 +223,7 @@ make helm-install
 ### Scripts in Scaffold vs mcp-base CLI
 
 **Included in scaffold:**
-- `bin/make-config.py` - Generates Auth0 config and Helm values
+- `bin/configure-make.py` - Generates make.env for Makefile configuration
 
 **Available via mcp-base CLI** (not in scaffold):
 ```bash

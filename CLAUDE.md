@@ -48,15 +48,20 @@ result = await session.call_tool("generate_server_scaffold", {
 
 ### Required Bin Scripts
 
-Generated servers include these utility scripts in `bin/`:
+**Scaffold includes (`bin/`):**
 
 | Script | Purpose |
 |--------|---------|
-| `add-user.py` | Add Auth0 users with roles |
-| `create-secrets.py` | Create Kubernetes secrets from auth0-config.json |
-| `make-config.py` | Generate configuration files (auth0-config.json, helm-values.yaml) |
-| `setup-auth0.py` | Configure Auth0 tenant (applications, APIs, roles) |
-| `setup-rbac.py` | Set up Kubernetes RBAC resources |
+| `configure-make.py` | Generate make.env for Makefile configuration |
+
+**Via mcp-base CLI** (NOT in scaffold):
+
+| Command | Purpose |
+|---------|---------|
+| `mcp-base setup-oidc` | Configure OIDC provider |
+| `mcp-base create-secrets` | Create Kubernetes secrets |
+| `mcp-base add-user` | Add users with roles |
+| `mcp-base setup-rbac` | Set up Kubernetes RBAC |
 
 **Do NOT generate shell scripts** like `run-local.sh`, `test-endpoints.sh`, etc. All utility scripts must be Python.
 

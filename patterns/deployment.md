@@ -135,14 +135,14 @@ helm-uninstall:
 ### 1. Generate Configuration Files
 
 ```bash
-# Run the configuration generator (included in scaffold)
-python bin/make-config.py
+# Configure Makefile settings (registry, namespace, etc.)
+python bin/configure-make.py
 
-# This creates:
-# - auth0-config.json (Auth0 credentials)
-# - helm-values.yaml (Helm deployment values)
-# - .env (local development environment)
-# - gitignore-additions.txt (entries to add to .gitignore)
+# This creates: make.env (Makefile configuration)
+
+# Configure OIDC authentication (requires mcp-base CLI)
+pip install mcp-base
+mcp-base setup-oidc
 ```
 
 ### 2. Build and Push Container Image
