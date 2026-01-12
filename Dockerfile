@@ -33,6 +33,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY src/mcp_base_server.py .
 COPY src/mcp_base_test_server.py .
 COPY src/mcp_base_tools.py .
+COPY src/artifact_store.py .
 COPY src/user_hash.py .
 COPY src/auth_oidc.py .
 COPY src/auth_fastmcp.py .

@@ -9,10 +9,13 @@ The mcp instance is passed in via register_tools() to avoid circular imports.
 
 import json
 import re
+import uuid
 from pathlib import Path
-from typing import Optional, Literal
+from typing import Optional, Literal, List, Dict, Any
 
 from jinja2 import Environment, FileSystemLoader, select_autoescape
+
+from artifact_store import artifact_store, get_mime_type_for_path
 
 # ============================================================================
 # Path Configuration
@@ -95,7 +98,8 @@ async def list_templates_impl() -> str:
 
     # Container templates
     result += "## Container Templates\n"
-    result += "- `container/Dockerfile.j2` - Multi-stage Docker build\n"
+    result += "- `container/Dockerfile.j2` - Production container build\n"
+    result += "- `container/Dockerfile.test.j2` - Test container build (no auth)\n"
     result += "- `container/requirements.txt` - Python dependencies (as-is)\n\n"
 
     # Helm templates
@@ -114,20 +118,22 @@ async def list_templates_impl() -> str:
     # Utility templates
     result += "## Utility Templates\n"
     result += "- `Makefile.j2` - Build and deployment automation\n"
+    result += "- `bin/configure-make.py.j2` - Makefile configuration generator (creates make.env)\n"
     result += "- `test/test_runner.py.j2` - Test runner script\n"
     result += "- `test/plugin_base.py` - Test plugin base class (as-is)\n"
     result += "- `test/test_list_resources.py` - Test resource listing (as-is)\n"
     result += "- `test/test_read_resource.py` - Test resource reading (as-is)\n"
     result += "- `test/test_list_prompts.py` - Test prompt listing (as-is)\n"
-    # Bin scripts (note: only .py scripts are allowed in bin/)
-    result += "\n## Bin Scripts (Python only - NO shell scripts)\n"
-    result += "- `bin/add-user.py.j2` - Add Auth0 users with roles\n"
-    result += "- `bin/create-secrets.py.j2` - Create Kubernetes secrets\n"
-    result += "- `bin/make-config.py.j2` - Generate configuration files (auth0-config.json, helm-values.yaml)\n"
-    result += "- `bin/setup-auth0.py` - Auth0 tenant setup (as-is, static)\n"
-    result += "- `bin/setup-rbac.py.j2` - RBAC setup script\n"
-    result += "\n**IMPORTANT**: The bin/ directory must only contain Python scripts (.py). "
-    result += "Shell scripts (.sh) are NOT allowed.\n"
+
+    # Note about utility scripts
+    result += "\n## Utility Scripts (Separate Package)\n"
+    result += "Most utility scripts are available via the mcp-base CLI:\n"
+    result += "  pip install mcp-base\n"
+    result += "  mcp-base --help  # Shows: add-user, create-secrets, setup-oidc, setup-rbac\n"
+    result += "\n"
+    result += "NOTE: bin/configure-make.py IS included in the scaffold to generate make.env\n"
+    result += "for configuring the Makefile (registry, image names, namespace, etc.).\n"
+    result += "For OIDC/auth setup, use: mcp-base setup-oidc\n"
 
     return result
 
@@ -273,30 +279,110 @@ async def generate_server_scaffold_impl(
     default_namespace: str = "default",
     operator_cluster_roles: Optional[str] = None,
     include_helm: bool = True,
-    include_test: bool = True,
-    include_bin: bool = True
-) -> str:
+    include_test: bool = True
+) -> Dict[str, Any]:
     """
     Generate complete MCP server project scaffold.
 
     Creates a full project structure with all necessary files for
-    a production-ready Kubernetes MCP server.
+    a production-ready Kubernetes MCP server. Files are stored as artifacts
+    and can be retrieved individually using get_artifact.
 
-    IMPORTANT: Use default parameter values unless the user explicitly specifies otherwise.
-    Do not override include_helm, include_test, or include_bin unless explicitly requested.
+    ========================================================================
+    CRITICAL: PHASE 2 IS IMPOSSIBLE UNTIL PHASE 1 IS VERIFIED COMPLETE
+    ========================================================================
+
+    This is not advice. It is a logical dependency:
+    - You cannot customize files that don't exist on disk
+    - You cannot test without test-mcp.py written
+    - You cannot build without Dockerfile written
+    - ARTIFACTS EXPIRE - retrieve them NOW or lose them forever
+
+    Phase 2 (customization) is UNDEFINED until Phase 1 is verified complete.
+    Treat Phase 2 as impossible, not just inadvisable, until then.
+
+    ========================================================================
+    PHASE 1: SCAFFOLD RETRIEVAL (MECHANICAL - NO CREATIVITY)
+    ========================================================================
+
+    This is MECHANICAL work. Think: copy machine, not architect.
+
+    REQUIRED STEPS (no exceptions):
+    1. Call this function - note file_count in response
+    2. Loop through EVERY file in the returned "files" list
+    3. For EACH file: content = get_artifact(project_id, path)
+    4. For EACH file: write EXACT content to ./path (current directory)
+    5. VERIFY: count files on disk == file_count from response
+
+    ARTIFACTS EXPIRE. Do not pause. Do not skip files. Complete NOW.
+
+    ========================================================================
+    PHASE 1 VERIFICATION (REQUIRED GATE)
+    ========================================================================
+
+    You CANNOT proceed until you verify:
+    [ ] actual files on disk == file_count (e.g., 34 == 34)
+    [ ] All files from files_list exist on disk
+
+    If verification fails, you failed. Generate a new scaffold.
+
+    ========================================================================
+    PHASE 2: CUSTOMIZATION (IMPOSSIBLE UNTIL PHASE 1 VERIFIED)
+    ========================================================================
+
+    Only after verification passes:
+    - Customize the *_tools.py file for your specific functionality
+    - Add any additional dependencies to requirements.txt
+
+    ========================================================================
+
+    The scaffold includes:
+    - src/ - Server code, tools, auth modules, test server
+    - bin/ - Configuration scripts (bin/configure-make.py)
+    - chart/ - Complete Helm chart with ALL templates (deployment, service, ingress, etc.)
+    - test/ - Test framework with driver scripts and plugin tests
+    - Dockerfile - Production container
+    - Dockerfile.test - Test container (no auth, for CI/CD)
+    - Makefile - Build targets including: build, build-test, push, push-test, test
+    - requirements.txt
+
+    NOTE: Most utility scripts are available via the mcp-base CLI (pip install mcp-base).
+    Exception: bin/configure-make.py IS included to generate make.env for Makefile config.
+    For OIDC/auth setup, use: mcp-base setup-oidc
+
+    CRITICAL USAGE RULES:
+    1. NON-DEVIATION RULE: Use MCPBase scaffold artifacts as the ONLY source of project files.
+       DO NOT create alternate scaffolds or replacement files under any circumstances.
+    2. ERROR HANDLING: On any tool or schema error, STOP immediately, report the full error,
+       and propose tool-based recovery (e.g., list_artifacts + get_artifact).
+       DO NOT attempt to work around errors by creating alternate scaffolds.
+    3. PARAMETER DEFAULTS: Use default parameter values unless the user explicitly specifies otherwise.
+       Do not override include_helm or include_test unless explicitly requested.
 
     Args:
         server_name: Human-readable server name (e.g., "Kubernetes Manager MCP")
-        output_description: "full" for all file contents, "summary" for file list only
+        output_description: Deprecated - included for backward compatibility only (ignored)
         port: HTTP server port (default: 4207)
         default_namespace: Default Kubernetes namespace
         operator_cluster_roles: Comma-separated ClusterRoles to bind (e.g., "my-operator-edit,other-operator-view")
         include_helm: Include Helm chart (default: True)
         include_test: Include test framework (default: True)
-        include_bin: Include utility scripts (default: True)
 
     Returns:
-        Generated project structure and file contents (or summary)
+        JSON object with project metadata, file list, and resource links.
+        Use get_artifact(project_id, path) to retrieve individual files.
+
+        Structure:
+        {
+            "project_id": "server-name-abc123",
+            "server_name": "Server Name",
+            "file_count": 37,
+            "files": ["Dockerfile", "src/...", ...],
+            "resource_links": [{"uri": "artifact://...", "path": "...", ...}],
+            "quick_start": ["..."],
+            "warnings": [],
+            "truncated": false
+        }
 
     Examples:
         - Basic: generate_server_scaffold(server_name="Kubernetes Manager MCP")
@@ -349,6 +435,7 @@ async def generate_server_scaffold_impl(
     # Container files
     container_templates = [
         ("container/Dockerfile.j2", "Dockerfile"),
+        ("container/Dockerfile.test.j2", "Dockerfile.test"),
     ]
 
     container_static = [
@@ -360,8 +447,13 @@ async def generate_server_scaffold_impl(
         ("Makefile.j2", "Makefile"),
     ]
 
+    # Bin scripts (coordinate with Dockerfile/Makefile)
+    bin_templates = [
+        ("bin/configure-make.py.j2", "bin/configure-make.py"),
+    ]
+
     # Process template files
-    for template_path, output_path in server_templates + container_templates + makefile:
+    for template_path, output_path in server_templates + container_templates + makefile + bin_templates:
         try:
             template = jinja_env.get_template(template_path)
             files[output_path] = template.render(**variables)
@@ -489,57 +581,74 @@ class TestExampleTool(TestPlugin):
             )
 '''
 
-    # Utility scripts
-    if include_bin:
-        bin_templates = [
-            ("bin/add-user.py.j2", "bin/add-user.py"),
-            ("bin/create-secrets.py.j2", "bin/create-secrets.py"),
-            ("bin/make-config.py.j2", "bin/make-config.py"),
-            ("bin/setup-rbac.py.j2", "bin/setup-rbac.py"),
-        ]
+    # NOTE: Utility scripts (add-user, setup-oidc, setup-rbac, etc.) are NOT included in the
+    # scaffold. They are available via the mcp-base CLI (pip install mcp-base) to avoid context
+    # bloat - these large utility scripts don't need customization and can be run via mcp-base.
 
-        bin_static = [
-            ("bin/setup-auth0.py", "bin/setup-auth0.py"),
-        ]
+    # Generate unique project ID for artifact storage
+    project_id = f"{server_name_kebab}-{uuid.uuid4().hex[:8]}"
 
-        for template_path, output_path in bin_templates:
-            try:
-                template = jinja_env.get_template(template_path)
-                files[output_path] = template.render(**variables)
-            except Exception as e:
-                files[output_path] = f"# Error rendering: {e}"
+    # Store all files as artifacts
+    for path, content in files.items():
+        mime_type = get_mime_type_for_path(path)
+        artifact_store.store(
+            project_id=project_id,
+            path=path,
+            content=content,
+            mime_type=mime_type,
+            description=f"Generated file for {server_name}"
+        )
 
-        for template_path, output_path in bin_static:
-            static_path = TEMPLATES_DIR / template_path
-            if static_path.exists():
-                files[output_path] = static_path.read_text()
+    # Build resource links for all files (always)
+    resource_links = []
+    for path in sorted(files.keys()):
+        mime_type = get_mime_type_for_path(path)
+        filename = path.split("/")[-1]
+        resource_links.append({
+            "uri": f"artifact://{project_id}/{path}",
+            "path": path,
+            "name": filename,
+            "mimeType": mime_type
+        })
 
-    # Generate output
+    # Always return a consistent JSON object structure
+    result = {
+        "project_id": project_id,
+        "server_name": server_name,
+        "server_name_snake": server_name_snake,
+        "server_name_kebab": server_name_kebab,
+        "file_count": len(files),
+        "files": sorted(files.keys()),
+        "resource_links": resource_links,
+        "quick_start": [
+            "======== PHASE 2 IS IMPOSSIBLE UNTIL PHASE 1 IS VERIFIED ========",
+            "This is not advice. It is a logical dependency.",
+            "You cannot customize files that don't exist. ARTIFACTS EXPIRE.",
+            "",
+            "======== PHASE 1: RETRIEVE ALL FILES NOW ========",
+            f"STEP 1: Loop through ALL {len(files)} files in 'files' list",
+            f"STEP 2: For EACH: content = get_artifact('{project_id}', path)",
+            "STEP 3: For EACH: write EXACT content to ./path",
+            f"STEP 4: VERIFY: count files on disk == {len(files)}",
+            "",
+            "Do not pause. Do not skip. Complete NOW or artifacts expire.",
+            "",
+            "======== PHASE 2: CUSTOMIZATION (IMPOSSIBLE UNTIL VERIFIED) ========",
+            f"Only after {len(files)} files verified on disk:",
+            f"  - Customize src/{server_name_snake}_tools.py",
+            f"  - Test: python src/{server_name_snake}_server.py --port {port}",
+            "  - Configure: python bin/configure-make.py  # Then: mcp-base setup-oidc",
+            "  - Deploy: make build && make push && make helm-install"
+        ],
+        "warnings": [],
+        "truncated": False
+    }
+
+    # Add a summary field for backward compatibility if requested
     if output_description == "summary":
-        result = f"# Generated Project: {server_name}\n\n"
-        result += f"## Project Structure\n\n"
-        result += "```\n"
-        for path in sorted(files.keys()):
-            result += f"{path}\n"
-        result += "```\n\n"
-        result += f"## Quick Start\n\n"
-        result += "1. Copy the generated files to your project directory\n"
-        result += f"2. Implement your tools in `src/{server_name_snake}_tools.py`\n"
-        result += "3. Run `pip install -r requirements.txt`\n"
-        result += f"4. Test locally: `python src/{server_name_snake}_server.py --port {port}`\n"
-        result += "5. Build container: `make build`\n"
-        result += "6. Deploy: `make helm-install`\n\n"
-        result += "Use `generate_server_scaffold` with `output_description=\"full\"` to see all file contents."
-        return result
+        result["summary"] = f"Generated {len(files)} files for {server_name}. Use get_artifact(project_id, path) to retrieve files."
 
-    else:  # full output
-        result = f"# Generated Project: {server_name}\n\n"
-        for path in sorted(files.keys()):
-            result += f"## {path}\n\n"
-            result += "```\n"
-            result += files[path]
-            result += "\n```\n\n"
-        return result
+    return result
 
 
 # ============================================================================
@@ -685,6 +794,23 @@ def register_resources(mcp):
         architecture_path = BASE_DIR / "ARCHITECTURE.md"
         return architecture_path.read_text()
 
+    # Dynamic artifact resource - list artifacts in a project
+    @mcp.resource("artifact://{project_id}")
+    def list_project_artifacts(project_id: str) -> str:
+        """
+        List all artifacts in a generated project.
+
+        Args:
+            project_id: The project identifier (e.g., "my-server-abc12345")
+
+        Returns:
+            JSON list of artifact paths and URIs
+        """
+        artifacts = artifact_store.list_project(project_id)
+        if not artifacts:
+            return f"Error: No artifacts found for project: {project_id}"
+        return json.dumps([{"path": path, "uri": uri} for path, uri in artifacts], indent=2)
+
 
 # ============================================================================
 # Tool Registration
@@ -745,10 +871,23 @@ def register_tools(mcp):
         default_namespace: str = "default",
         operator_cluster_roles: Optional[str] = None,
         include_helm: bool = True,
-        include_test: bool = True,
-        include_bin: bool = True
-    ) -> str:
-        """Generate complete MCP server project scaffold."""
+        include_test: bool = True
+    ) -> Dict[str, Any]:
+        """
+        Generate complete MCP server project scaffold.
+
+        Returns a JSON object with project metadata and file references.
+        Use get_artifact(project_id, path) to retrieve individual files.
+
+        NOTE: Utility scripts are NOT included. They are available via the mcp-base CLI:
+        pip install mcp-base && mcp-base --help
+
+        Returns:
+            JSON object containing:
+            - project_id: Unique identifier for retrieving artifacts
+            - files: List of all generated file paths
+            - quick_start: Steps to get started
+        """
         return await generate_server_scaffold_impl(
             server_name=server_name,
             output_description=output_description,
@@ -756,6 +895,68 @@ def register_tools(mcp):
             default_namespace=default_namespace,
             operator_cluster_roles=operator_cluster_roles,
             include_helm=include_helm,
-            include_test=include_test,
-            include_bin=include_bin
+            include_test=include_test
         )
+
+    @mcp.tool(name="get_artifact")
+    async def get_artifact(project_id: str, path: str) -> str:
+        """
+        Retrieve a generated artifact file by project ID and path.
+
+        After calling generate_server_scaffold, use this tool to retrieve
+        individual generated files. This allows fetching one file at a time
+        instead of all files at once, reducing context usage.
+
+        CRITICAL: If this tool returns an error, DO NOT create replacement files.
+        Instead, use list_artifacts to see available files, or report the error
+        and ask the user for guidance.
+
+        Args:
+            project_id: The project identifier returned by generate_server_scaffold
+                        (e.g., "my-server-abc12345")
+            path: The file path within the project (e.g., "src/my_server.py",
+                  "Makefile", "chart/values.yaml")
+
+        Returns:
+            File content as text, or error message if not found
+        """
+        artifact = artifact_store.get(project_id, path)
+        if artifact is None:
+            # List available files to help the user
+            available = artifact_store.list_project(project_id)
+            if not available:
+                return f"Error: Project '{project_id}' not found. No artifacts stored."
+            paths = [p for p, _ in available]
+            return f"Error: Artifact '{path}' not found in project '{project_id}'.\n\nAvailable files:\n" + "\n".join(f"  - {p}" for p in paths[:20])
+        return artifact.content
+
+    @mcp.tool(name="list_artifacts")
+    async def list_artifacts(project_id: str) -> str:
+        """
+        List all generated artifacts in a project.
+
+        Use this after generate_server_scaffold to see all available files,
+        then use get_artifact to retrieve specific files.
+
+        CRITICAL: This is the authoritative source for project files. Always use
+        the official artifact list - DO NOT create alternate file lists or replacement
+        scaffolds.
+
+        Args:
+            project_id: The project identifier returned by generate_server_scaffold
+
+        Returns:
+            JSON list of available artifact paths
+        """
+        artifacts = artifact_store.list_project(project_id)
+        if not artifacts:
+            all_projects = artifact_store.list_all_projects()
+            if all_projects:
+                return f"Error: Project '{project_id}' not found.\n\nAvailable projects:\n" + "\n".join(f"  - {p}" for p in all_projects)
+            return f"Error: No artifacts stored. Call generate_server_scaffold first."
+        return json.dumps({
+            "project_id": project_id,
+            "file_count": len(artifacts),
+            "files": [path for path, _ in artifacts]
+        }, indent=2)
+

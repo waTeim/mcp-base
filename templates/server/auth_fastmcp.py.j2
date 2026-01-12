@@ -423,6 +423,7 @@ def create_auth0_oauth_proxy(config_path: Optional[str] = None) -> Auth0Provider
         "audience": audience,
         "base_url": public_url,
         "redirect_path": "/auth/callback",
+        "required_scopes": ["openid", "offline_access"],  # offline_access enables refresh tokens
         "require_authorization_consent": True,
         "jwt_signing_key": jwt_signing_key,
     }
@@ -448,6 +449,7 @@ def create_auth0_oauth_proxy(config_path: Optional[str] = None) -> Auth0Provider
     logger.info("Token Configuration:")
     logger.info("  - Issuance: MCP server issues its own JWT tokens")
     logger.info("  - Auth0 tokens: Stored securely (encrypted with Fernet)")
+    logger.info("  - Refresh tokens: Enabled via offline_access scope")
     logger.info("  - Client tokens: Signed with HS256, validated by MCP server")
     logger.info("  - JWT Signing Key: " + ("Custom key" if jwt_signing_key else "Generated"))
     logger.info("")
