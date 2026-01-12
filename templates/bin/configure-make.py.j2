@@ -1,0 +1,269 @@
+#!/usr/bin/env python3
+"""
+{{ server_name }} MCP Server - Makefile Configuration
+
+Generates make.env to configure Makefile behavior for building and deploying.
+
+This script configures:
+- Container registry and image names
+- Helm release name and namespace
+- Build platform and container tool
+
+For OIDC/auth configuration, use: mcp-base setup-oidc
+For Kubernetes secrets, use: mcp-base create-secrets
+
+Usage:
+    # Interactive mode
+    python configure-make.py
+
+    # From environment variables
+    python configure-make.py --from-env
+
+    # Specify values directly
+    python configure-make.py --registry ghcr.io/myorg --namespace prod
+
+    # Output to specific directory
+    python configure-make.py --output-dir ./config
+"""
+
+import os
+import sys
+import argparse
+from pathlib import Path
+from typing import Optional
+
+
+def get_env_or_prompt(
+    env_var: str,
+    prompt: str,
+    required: bool = False,
+    default: Optional[str] = None
+) -> Optional[str]:
+    """Get value from environment variable or prompt user."""
+    value = os.environ.get(env_var)
+    if value:
+        print(f"  {prompt}: {value} (from {env_var})")
+        return value
+
+    if sys.stdin.isatty():
+        if default:
+            user_input = input(f"  {prompt} [{default}]: ").strip()
+            return user_input if user_input else default
+        else:
+            user_input = input(f"  {prompt}: ").strip()
+            if required and not user_input:
+                print(f"    Error: {prompt} is required")
+                sys.exit(1)
+            return user_input if user_input else None
+    elif required and not default:
+        print(f"Error: {env_var} environment variable required in non-interactive mode")
+        sys.exit(1)
+    return default
+
+
+class MakeConfigGenerator:
+    """Generate make.env configuration for {{ server_name }} MCP Server."""
+
+    SERVER_NAME = "{{ server_name }}"
+    SERVER_NAME_SNAKE = "{{ server_name_snake }}"
+    CHART_NAME = "{{ chart_name }}"
+    DEFAULT_PORT = {{ port }}
+
+    def __init__(self, output_dir: Path = Path(".")):
+        self.output_dir = output_dir
+        self.output_dir.mkdir(parents=True, exist_ok=True)
+
+    def collect_config(self, args: Optional[argparse.Namespace] = None) -> dict:
+        """Collect Makefile configuration values."""
+        print("\n=== Makefile Configuration ===")
+
+        config = {}
+
+        # Container Registry
+        config["registry"] = args.registry if args and args.registry else None
+        if not config["registry"]:
+            config["registry"] = get_env_or_prompt(
+                "REGISTRY",
+                "Container Registry (e.g., ghcr.io/myorg, docker.io/myuser)",
+                required=True,
+                default="your-registry.example.com"
+            )
+
+        # Image Names
+        default_image = self.SERVER_NAME_SNAKE.replace("_", "-") + "-server"
+        config["image_name"] = args.image_name if args and args.image_name else None
+        if not config["image_name"]:
+            config["image_name"] = get_env_or_prompt(
+                "IMAGE_NAME",
+                "Production Image Name",
+                default=default_image
+            )
+
+        default_test_image = self.SERVER_NAME_SNAKE.replace("_", "-") + "-test-server"
+        config["test_image_name"] = args.test_image_name if args and args.test_image_name else None
+        if not config["test_image_name"]:
+            config["test_image_name"] = get_env_or_prompt(
+                "TEST_IMAGE_NAME",
+                "Test Image Name",
+                default=default_test_image
+            )
+
+        # Tag
+        config["tag"] = args.tag if args and args.tag else None
+        if not config["tag"]:
+            config["tag"] = get_env_or_prompt(
+                "TAG",
+                "Image Tag",
+                default="latest"
+            )
+
+        # Platform
+        config["platform"] = args.platform if args and args.platform else None
+        if not config["platform"]:
+            config["platform"] = get_env_or_prompt(
+                "PLATFORM",
+                "Build Platform",
+                default="linux/amd64"
+            )
+
+        # Container Tool
+        config["container_tool"] = args.container_tool if args and args.container_tool else None
+        if not config["container_tool"]:
+            config["container_tool"] = get_env_or_prompt(
+                "CONTAINER_TOOL",
+                "Container Tool (docker/podman)",
+                default="docker"
+            )
+
+        # Helm Configuration
+        print("\n=== Helm Configuration ===")
+
+        config["helm_release"] = args.release_name if args and args.release_name else None
+        if not config["helm_release"]:
+            config["helm_release"] = get_env_or_prompt(
+                "HELM_RELEASE",
+                "Helm Release Name",
+                default=self.CHART_NAME
+            )
+
+        config["helm_namespace"] = args.namespace if args and args.namespace else None
+        if not config["helm_namespace"]:
+            config["helm_namespace"] = get_env_or_prompt(
+                "HELM_NAMESPACE",
+                "Kubernetes Namespace",
+                default="default"
+            )
+
+        return config
+
+    def generate_make_env(self, config: dict) -> Path:
+        """Generate make.env file."""
+        content = f'''# {{ server_name }} MCP Server - Makefile Configuration
+# Generated by configure-make.py
+# Include this file in your Makefile with: -include make.env
+
+# Container Registry
+REGISTRY = {config["registry"]}
+
+# Image Names
+IMAGE_NAME = {config["image_name"]}
+TEST_IMAGE_NAME = {config["test_image_name"]}
+
+# Image Tag
+TAG = {config["tag"]}
+
+# Build Configuration
+PLATFORM = {config["platform"]}
+CONTAINER_TOOL = {config["container_tool"]}
+
+# Helm Configuration
+HELM_RELEASE = {config["helm_release"]}
+HELM_NAMESPACE = {config["helm_namespace"]}
+'''
+
+        output_path = self.output_dir / "make.env"
+        with open(output_path, 'w') as f:
+            f.write(content)
+
+        print(f"\n  Created: {output_path}")
+        return output_path
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description=f"Configure Makefile for {MakeConfigGenerator.SERVER_NAME} MCP Server",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+This script generates make.env for Makefile configuration.
+
+For OIDC/authentication setup, use the mcp-base CLI:
+  pip install mcp-base
+  mcp-base setup-oidc      # Configure OIDC provider
+  mcp-base create-secrets  # Create Kubernetes secrets
+
+Examples:
+  # Interactive mode
+  python configure-make.py
+
+  # Non-interactive with environment variables
+  REGISTRY=ghcr.io/myorg python configure-make.py --from-env
+
+  # Direct values
+  python configure-make.py --registry ghcr.io/myorg --namespace prod
+"""
+    )
+
+    parser.add_argument(
+        "--from-env",
+        action="store_true",
+        help="Read all values from environment variables (non-interactive)"
+    )
+
+    parser.add_argument(
+        "--output-dir",
+        type=Path,
+        default=Path("."),
+        help="Directory to write make.env (default: current directory)"
+    )
+
+    # Container options
+    parser.add_argument("--registry", help="Container registry (e.g., ghcr.io/myorg)")
+    parser.add_argument("--image-name", help="Production image name")
+    parser.add_argument("--test-image-name", help="Test image name")
+    parser.add_argument("--tag", help="Image tag (default: latest)")
+    parser.add_argument("--platform", help="Build platform (default: linux/amd64)")
+    parser.add_argument("--container-tool", help="Container tool: docker or podman")
+
+    # Helm options
+    parser.add_argument("--release-name", help="Helm release name")
+    parser.add_argument("--namespace", help="Kubernetes namespace")
+
+    args = parser.parse_args()
+
+    print(f"=== {MakeConfigGenerator.SERVER_NAME} - Makefile Configuration ===")
+
+    generator = MakeConfigGenerator(output_dir=args.output_dir)
+    config = generator.collect_config(args=args)
+    generator.generate_make_env(config)
+
+    # Print next steps
+    print("\n=== Next Steps ===")
+    print("1. Configure OIDC authentication:")
+    print("   mcp-base setup-oidc")
+    print("")
+    print("2. Build and push container images:")
+    print("   make build && make push")
+    print("   make build-test && make push-test  # For test container")
+    print("")
+    print("3. Create Kubernetes secrets:")
+    print("   mcp-base create-secrets")
+    print("")
+    print("4. Deploy with Helm:")
+    print(f"   make helm-install")
+    print("")
+    print("For local development (no auth):")
+    print("   make dev-run-test")
+
+
+if __name__ == "__main__":
+    main()

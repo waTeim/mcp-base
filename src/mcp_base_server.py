@@ -55,21 +55,74 @@ mcp = FastMCP(
 You are an MCP server construction assistant. You help AI agents build
 production-ready MCP servers for Kubernetes environments.
 
-Available resources:
-- Templates for server code, Dockerfile, Helm charts
-- Pattern documentation for authentication, tools, deployment
+========================================================================
+CRITICAL: PHASE 2 IS IMPOSSIBLE UNTIL PHASE 1 IS COMPLETE
+========================================================================
+
+This is not advice. It is a logical dependency:
+- You cannot customize files that don't exist on disk
+- You cannot test a server without test-mcp.py written
+- You cannot build a container without Dockerfile written
+- Artifacts EXPIRE after a short time - retrieve them NOW or lose them
+
+Phase 2 (customization) is UNDEFINED until Phase 1 (retrieval) is verified complete.
+Treat Phase 2 work as impossible, not just inadvisable, until then.
+
+========================================================================
+PHASE 1: SCAFFOLD RETRIEVAL (MECHANICAL - NO CREATIVITY)
+========================================================================
+
+This phase is MECHANICAL work. Think: copy machine, not architect.
+
+Step 1: Generate scaffold
+   result = generate_server_scaffold(server_name="My Server")
+   project_id = result["project_id"]
+   files_list = result["files"]  # e.g., 34 files
+   expected_count = result["file_count"]
+
+Step 2: Retrieve and write EVERY file (no exceptions)
+   for each file_path in files_list:
+       content = get_artifact(project_id, file_path)
+       write content to ./file_path (EXACT content, no modifications)
+
+Step 3: Verify file count BEFORE proceeding
+   actual_count = count files written to disk
+   assert actual_count == expected_count
+
+ARTIFACTS EXPIRE. Do not pause, do not get distracted, do not skip files.
+Complete this loop NOW. Every file. No exceptions.
+
+========================================================================
+PHASE 1 VERIFICATION (REQUIRED GATE)
+========================================================================
+
+You CANNOT proceed to Phase 2 until you verify:
+[ ] actual_count == expected_count (e.g., 34 == 34)
+[ ] All files from files_list exist on disk
+[ ] No custom content written yet
+
+If verification fails, you failed. Start over with a new scaffold.
+
+========================================================================
+PHASE 2: CUSTOMIZATION (IMPOSSIBLE UNTIL PHASE 1 VERIFIED)
+========================================================================
+
+Only after verification passes:
+- Customize the *_tools.py file for your specific functionality
+- Add any additional dependencies to requirements.txt
+- Modify Helm values as needed
 
 Available tools:
 - generate_server_scaffold: Create complete server project structure
+- get_artifact: Retrieve a specific file from a generated scaffold
+- list_artifacts: List all files in a scaffold project
 - render_template: Render individual templates with parameters
 - list_templates: List available templates
 - get_pattern: Get pattern documentation
 
-When building a new MCP server:
-1. Use list_templates to see available templates
-2. Use get_pattern to understand implementation patterns
-3. Use generate_server_scaffold to create the project
-4. Customize the generated files for your specific use case
+NOTE: Utility scripts are available via the mcp-base CLI:
+  pip install mcp-base
+  mcp-base --help  # Shows: add-user, create-secrets, setup-oidc, setup-rbac
 """
 )
 
@@ -131,6 +184,16 @@ def run_http_transport(port: int = 4208, host: str = "0.0.0.0"):
 
     # Create app with OAuth at /mcp endpoint
     app = mcp.http_app(transport="http", path="/mcp")
+
+    # Add CORS middleware to handle OPTIONS preflight requests
+    from starlette.middleware.cors import CORSMiddleware
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["*"],  # Allow all origins (customize as needed)
+        allow_credentials=True,
+        allow_methods=["GET", "POST", "OPTIONS"],  # Explicitly allow OPTIONS
+        allow_headers=["*"],
+    )
 
     # Add request logging middleware with MCP message inspection
     class RequestLoggingMiddleware(BaseHTTPMiddleware):

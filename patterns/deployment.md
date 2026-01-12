@@ -132,29 +132,55 @@ helm-uninstall:
 
 ## Pre-deployment Setup
 
-### 1. Create Secrets
+### 1. Generate Configuration Files
 
 ```bash
-# Run Auth0 setup script
-python bin/setup-auth0.py --token $AUTH0_MGMT_TOKEN
+# Configure Makefile settings (registry, namespace, etc.)
+python bin/configure-make.py
+
+# This creates: make.env (Makefile configuration)
+
+# Configure OIDC authentication (requires mcp-base CLI)
+pip install mcp-base
+mcp-base setup-oidc
+```
+
+### 2. Build and Push Container Image
+
+```bash
+# Build the container image
+make build
+
+# Push to registry
+make push
+```
+
+### 3. Create Kubernetes Secrets
+
+```bash
+# Install mcp-base CLI
+pip install mcp-base
+
+# Setup Auth0 resources (optional - if configuring Auth0 automatically)
+mcp-base setup-oidc --auth0 --token $AUTH0_MGMT_TOKEN
 
 # Create Kubernetes secrets from auth0-config.json
-python bin/create-secrets.py \
+mcp-base create-secrets \
     --namespace mcp \
     --release-name mcp-server
 ```
 
-### 2. Setup RBAC (if needed)
+### 4. Setup RBAC (if needed)
 
 ```bash
 # Create RBAC resources
-python bin/setup-rbac.py \
+mcp-base setup-rbac \
     --namespace mcp \
     --service-account mcp-server \
     --scope cluster
 ```
 
-### 3. Update Helm Dependencies
+### 5. Update Helm Dependencies
 
 ```bash
 helm dependency update chart/

@@ -115,6 +115,16 @@ def run_http_transport(host: str, port: int):
     # Create app with OAuth at /mcp endpoint
     app = mcp.http_app(transport="http", path="/mcp")
 
+    # Add CORS middleware to handle OPTIONS preflight requests
+    from starlette.middleware.cors import CORSMiddleware
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["*"],  # Allow all origins (customize as needed)
+        allow_credentials=True,
+        allow_methods=["GET", "POST", "OPTIONS"],  # Explicitly allow OPTIONS
+        allow_headers=["*"],
+    )
+
     # Add health check routes
     app.add_route("/healthz", liveness_check)
     app.add_route("/readyz", readiness_check)

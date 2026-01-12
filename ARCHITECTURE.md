@@ -339,7 +339,86 @@ prompts:
 - `admin_reload_prompts`: Trigger hot-reload from ConfigMap
 - `admin_get_prompt_manifest`: Get version/hash for caching
 
-### 8. Test Plugin Architecture
+### 8. Artifact Retrieval Architecture
+
+Generated scaffolds can contain large files (e.g., bin/setup-auth0.py ~2000 lines) that would cause **context bloat** if loaded directly into AI agent context windows. The artifact retrieval system solves this problem:
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│              Artifact Retrieval Flow                         │
+├─────────────────────────────────────────────────────────────┤
+│                                                              │
+│  1. Agent generates scaffold                                 │
+│     generate_server_scaffold(...) → project_id              │
+│                                                              │
+│  2. Agent gets retrieval script                             │
+│     get_retrieval_script() → {script, usage, example}       │
+│                                                              │
+│  3. Agent writes script to disk                             │
+│     Write("retrieve-artifacts.py", script)                  │
+│                                                              │
+│  4. Agent requests Claude Code execution                    │
+│     "Run: python retrieve-artifacts.py PROJECT FILES..."    │
+│                                                              │
+│  5. Claude Code intercepts MCP calls                        │
+│     ┌────────────────────────────────────┐                  │
+│     │ Script: get_artifact_via_mcp(...)  │                  │
+│     │    ↓ (intercepted)                 │                  │
+│     │ Tool:  mcp__mcp-base__get_artifact │                  │
+│     │    ↓                               │                  │
+│     │ Result: file content               │                  │
+│     │    ↓                               │                  │
+│     │ Script: Write to disk              │                  │
+│     └────────────────────────────────────┘                  │
+│                                                              │
+│  Result: Files on disk, minimal context usage               │
+│                                                              │
+└─────────────────────────────────────────────────────────────┘
+```
+
+**Context Savings:**
+- **Before**: Retrieving bin/setup-auth0.py (2000 lines) = 20,000+ tokens
+- **After**: Script execution metadata only = ~500 tokens
+- **Improvement**: 97% reduction in context usage
+
+**When to Use:**
+- ✅ Large files (>1000 lines): bin/setup-auth0.py, bin/setup-rbac.py
+- ✅ Multiple large files: Batch retrieval in one command
+- ✅ Context preservation: When agent needs room for actual work
+
+**When to Use Regular get_artifact():**
+- ✅ Small files (<500 lines): src/my_server.py, Makefile
+- ✅ Content analysis: When agent needs to read/discuss the file
+- ✅ Single file quick fetch: When agent wants to see content
+
+**Tools Provided:**
+1. `get_retrieval_script()` - Returns Python script for efficient retrieval
+2. `get_artifact(project_id, file_path)` - Retrieve single file (loads into context)
+3. `list_artifacts(project_id)` - List all files in generated project
+
+**Claude Code Interception Mechanism:**
+
+The retrieval script defines a function that Claude Code recognizes and intercepts:
+
+```python
+def get_artifact_via_mcp(project_id: str, file_path: str) -> str:
+    """
+    Retrieve artifact via MCP tool call.
+
+    NOTE: This function is intercepted by Claude Code and replaced
+    with an actual MCP tool call to mcp__mcp-base__get_artifact.
+    """
+    raise NotImplementedError("This should be intercepted by Claude Code")
+```
+
+When Claude Code executes the script, it:
+1. Parses the Python script before execution
+2. Identifies calls to `get_artifact_via_mcp()`
+3. Replaces them with actual MCP tool invocations
+4. Returns file content directly to the script
+5. Script writes to filesystem without context bloat
+
+### 9. Test Plugin Architecture
 
 Tests use a plugin-based architecture for extensibility:
 
@@ -390,12 +469,8 @@ my-mcp-server/
 │   ├── mcp_context.py           # MCPContext & with_mcp_context
 │   ├── user_hash.py             # User ID utilities
 │   └── prompt_registry.py       # Versioned prompt management
-├── bin/                          # Utility scripts (Python only!)
-│   ├── add-user.py              # Add Auth0 users with roles
-│   ├── create-secrets.py        # Create K8s secrets from auth0-config.json
-│   ├── make-config.py           # Generate config files
-│   ├── setup-auth0.py           # Configure Auth0 tenant
-│   └── setup-rbac.py            # Set up K8s RBAC resources
+├── bin/                          # Configuration scripts
+│   └── configure-make.py        # Generate make.env for Makefile
 ├── test/
 │   ├── plugins/
 │   │   ├── __init__.py          # Base classes
@@ -410,22 +485,24 @@ my-mcp-server/
 └── requirements.txt
 ```
 
-### Bin Scripts Constraint
+### Script Distribution
 
-**⚠️ IMPORTANT**: The `bin/` directory must contain ONLY Python scripts (`.py`). Shell scripts (`.sh`) are NOT allowed.
+**In scaffold (`bin/`):**
 
 | Script | Purpose |
 |--------|---------|
-| `add-user.py` | Add Auth0 users with assigned roles |
-| `create-secrets.py` | Create Kubernetes secrets from auth0-config.json |
-| `make-config.py` | Generate auth0-config.json and helm-values.yaml |
-| `setup-auth0.py` | Configure Auth0 tenant (applications, APIs, roles) |
-| `setup-rbac.py` | Set up Kubernetes RBAC resources |
+| `configure-make.py` | Generate make.env for Makefile configuration |
 
-**Why Python only?**
-1. **Portability**: Works across Linux, macOS, Windows
-2. **Dependencies**: Leverages existing Python packages (kubernetes, auth0-python)
-3. **Consistency**: Same language as the MCP server
+**Via mcp-base CLI** (install with `pip install mcp-base`):
+
+| Command | Purpose |
+|---------|---------|
+| `mcp-base setup-oidc` | Configure OIDC provider (Auth0, Dex, Keycloak, etc.) |
+| `mcp-base create-secrets` | Create Kubernetes secrets |
+| `mcp-base add-user` | Add users with roles |
+| `mcp-base setup-rbac` | Set up Kubernetes RBAC resources |
+
+**⚠️ IMPORTANT**: The `bin/` directory must contain ONLY Python scripts (`.py`). Shell scripts (`.sh`) are NOT allowed.
 
 ## Common Pitfalls & Solutions
 

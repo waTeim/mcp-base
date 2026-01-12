@@ -2,299 +2,248 @@
 
 This pattern describes how to use mcp-base to generate a complete MCP server project.
 
-## Critical Concept: Resources vs Tools
+---
 
-**⚠️ IMPORTANT**: Reading MCP resources does NOT create files. Resources provide templates and documentation as read-only content. To create actual source files, you must call the generation tools.
+## CRITICAL: PHASE 2 IS IMPOSSIBLE UNTIL PHASE 1 IS VERIFIED
 
-### What Happens When You Read a Resource
+This is not advice. It is a logical dependency:
+
+- **You cannot customize files that don't exist on disk**
+- **You cannot test a server without test-mcp.py written**
+- **You cannot build a container without Dockerfile written**
+- **ARTIFACTS EXPIRE** - retrieve them NOW or lose them forever
+
+Phase 2 (customization) is **UNDEFINED** until Phase 1 (retrieval) is verified complete.
+Treat Phase 2 work as **impossible**, not just inadvisable, until verification passes.
+
+---
+
+## PHASE 1: SCAFFOLD RETRIEVAL (MECHANICAL - NO CREATIVITY)
+
+**Mindset**: This is MECHANICAL work. Think: copy machine, not architect.
+
+### Step 1: Generate the Scaffold
 
 ```python
-# Reading a template resource
-content = await session.read_resource("template://server/entry_point.py")
-# Result: You get the Jinja2 template content as a string
-# Disk state: NO FILES CREATED
-
-# Reading a pattern resource
-docs = await session.read_resource("pattern://fastmcp-tools")
-# Result: You get pattern documentation as a string
-# Disk state: NO FILES CREATED
-```
-
-**Resources are informational only** - they help you understand what will be generated, but they don't generate anything.
-
-### What Happens When You Call Generation Tools
-
-```python
-# Calling the scaffold generation tool
 result = await session.call_tool("generate_server_scaffold", {
     "server_name": "My Kubernetes Manager"
 })
-# Result: A complete project directory is created on disk
-# Disk state: my-kubernetes-manager/ directory with all source files exists
+
+project_id = result["project_id"]   # e.g., "my-kubernetes-manager-abc12345"
+files = result["files"]             # List of ALL file paths (e.g., 33 files)
+file_count = result["file_count"]   # Expected count
 ```
 
-## Complete Generation Workflow
+### Step 2: Retrieve and Write EVERY File
 
-### Option 1: Full Scaffold Generation (Recommended)
-
-Generate a complete, ready-to-deploy MCP server project:
+**This loop is MANDATORY. No exceptions. No shortcuts.**
 
 ```python
-# 1. Call generate_server_scaffold
-result = await session.call_tool("generate_server_scaffold", {
-    "server_name": "My Kubernetes Manager",
-    "port": 4207,
-    "default_namespace": "default",
-    "operator_cluster_roles": "cluster-admin",
-    "include_helm": True,
-    "include_test": True,
-    "include_bin": True,
-    "output_description": "summary"
-})
+for file_path in files:
+    # Get EXACT content from artifact store
+    content = await session.call_tool("get_artifact", {
+        "project_id": project_id,
+        "path": file_path
+    })
 
-# 2. The tool creates this directory structure:
-# my-kubernetes-manager/
-# ├── src/
-# │   ├── my_kubernetes_manager.py
-# │   ├── my_kubernetes_manager_test_server.py
-# │   ├── my_kubernetes_manager_tools.py
-# │   ├── auth_fastmcp.py
-# │   ├── auth_oidc.py
-# │   ├── mcp_context.py
-# │   └── user_hash.py
-# ├── bin/                              # ⚠️ PYTHON SCRIPTS ONLY!
-# │   ├── add-user.py                   # Add Auth0 users
-# │   ├── create-secrets.py             # Create K8s secrets
-# │   ├── make-config.py                # Generate config files
-# │   ├── setup-auth0.py                # Configure Auth0 tenant
-# │   └── setup-rbac.py                 # Set up K8s RBAC
-# ├── test/
-# │   └── plugins/
-# ├── chart/
-# │   ├── Chart.yaml
-# │   └── values.yaml
-# ├── Dockerfile
-# ├── Makefile
-# └── requirements.txt
+    # Create parent directories if needed
+    parent_dir = os.path.dirname(file_path)
+    if parent_dir:
+        os.makedirs(parent_dir, exist_ok=True)
 
-# 3. Customize the generated code
-# Edit my_kubernetes_manager_tools.py to add your Kubernetes operations:
-# - Add tool functions for pod management, deployment operations, etc.
-# - Add resource registrations for configuration data
+    # Write EXACT content to current directory
+    with open(file_path, "w") as f:
+        f.write(content)
+
+    print(f"✓ {file_path}")
 ```
 
-### Option 2: Individual Template Rendering
-
-For more control, render individual templates:
-
-```python
-# 1. Render a specific template
-entry_point = await session.call_tool("render_template", {
-    "template_path": "server/entry_point.py.j2",
-    "server_name": "My Kubernetes Manager",
-    "port": 4207,
-    "default_namespace": "default"
-})
-
-# 2. Write the rendered content to a file yourself
-# (You must do this - render_template returns a string)
-with open("src/my_kubernetes_manager.py", "w") as f:
-    f.write(entry_point)
-```
-
-### Option 3: Hybrid Approach
-
-Generate scaffold, then customize specific files:
-
-```python
-# 1. Generate base scaffold
-await session.call_tool("generate_server_scaffold", {
-    "server_name": "My Manager",
-    "include_test": False  # Skip test framework initially
-})
-
-# 2. Later, render test framework components individually
-test_plugin = await session.call_tool("render_template", {
-    "template_path": "test/test_list_resources.py.j2",
-    "server_name": "My Manager"
-})
-
-# 3. Write to the appropriate location
-with open("test/plugins/test_list_resources.py", "w") as f:
-    f.write(test_plugin)
-```
-
-## Understanding the Generated Code
-
-### What You Get vs What You Must Add
-
-**Generated automatically:**
-- Server entry points (main + test servers)
-- Authentication middleware (OAuth + OIDC)
-- Context extraction and user hashing
-- Test framework structure
-- Helm chart with Redis session storage
-- Dockerfile and build configuration
-
-**You must add:**
-- Actual tool implementations in `*_tools.py`
-- Kubernetes API client code for your operations
-- Resource registrations for your configuration data
-- Test plugins for your custom tools
-
-### Example: Adding Your First Tool
-
-After generating the scaffold, edit `my_kubernetes_manager_tools.py`:
-
-```python
-def register_tools(mcp):
-    """Register all tools with the MCP server instance."""
-
-    @mcp.tool(name="list_pods")
-    @with_mcp_context
-    async def list_pods(ctx: MCPContext, namespace: str = "default") -> str:
-        """
-        List all pods in the specified namespace.
-
-        Args:
-            namespace: Kubernetes namespace to list from
-
-        Returns:
-            Formatted list of pods
-        """
-        # Add your Kubernetes API call here
-        from kubernetes import client, config
-        config.load_incluster_config()
-        v1 = client.CoreV1Api()
-
-        pods = v1.list_namespaced_pod(namespace=namespace)
-
-        result = []
-        for pod in pods.items:
-            result.append({
-                "name": pod.metadata.name,
-                "status": pod.status.phase,
-                "namespace": pod.metadata.namespace
-            })
-
-        return json.dumps(result, indent=2)
-```
-
-## Common Misconceptions
-
-### ❌ "I read template://server/tools.py so now I have a tools.py file"
-
-**Reality**: You only read the template content. No file exists until you:
-1. Call `generate_server_scaffold()`, OR
-2. Call `render_template()` and write the output yourself
-
-### ❌ "I'll just read all the templates and assemble them manually"
-
-**Why this is harder**: You would need to:
-1. Read each template individually
-2. Provide all Jinja2 variables correctly
-3. Create the directory structure
-4. Write each file to the correct location
-5. Ensure naming conventions match across files
-
-**Better approach**: Use `generate_server_scaffold()` which does all of this for you.
-
-### ❌ "The scaffold includes my Kubernetes tools"
-
-**Reality**: The scaffold includes:
-- Server infrastructure (authentication, context, etc.)
-- A skeleton `*_tools.py` with `register_tools()` and `register_resources()` functions
-- Example/placeholder tool implementations
-
-You must add your actual Kubernetes operations (list pods, create deployments, etc.) to the `*_tools.py` file.
-
-### ❌ "I'll add some shell scripts to bin/ for convenience"
-
-**WRONG**: The `bin/` directory must contain **ONLY Python scripts (.py)**. Shell scripts (.sh) are NOT allowed.
-
-**Why Python only?**
-1. **Portability**: Works on Linux, macOS, and Windows
-2. **Dependencies**: Leverages existing Python packages (kubernetes, auth0-python)
-3. **Consistency**: Same language as the MCP server itself
-4. **Error Handling**: Better exception handling and user feedback
-
-**Required bin scripts** (generated by scaffold):
-- `add-user.py` - Add Auth0 users with roles
-- `create-secrets.py` - Create Kubernetes secrets from auth0-config.json
-- `make-config.py` - Generate auth0-config.json and helm-values.yaml
-- `setup-auth0.py` - Configure Auth0 tenant
-- `setup-rbac.py` - Set up Kubernetes RBAC resources
-
-Do NOT create scripts like `run-local.sh`, `test-endpoints.sh`, `generate-kubeconfig.sh` - convert any such functionality to Python.
-
-## Verification Steps
-
-After generation, verify the project was created:
+### Step 3: Verify File Count
 
 ```bash
-# Check directory structure
-ls -la my-kubernetes-manager/
-
-# Should see:
-# src/
-# bin/         # ⚠️ Python scripts only!
-# test/
-# chart/
-# Dockerfile
-# Makefile
-# requirements.txt
-
-# Check bin/ contains ONLY .py files
-ls -la my-kubernetes-manager/bin/
-# Should see: add-user.py, create-secrets.py, make-config.py, setup-auth0.py, setup-rbac.py
-# Should NOT see any .sh files!
-
-# Check main files exist
-ls -la my-kubernetes-manager/src/
-
-# Should see:
-# my_kubernetes_manager.py
-# my_kubernetes_manager_test_server.py
-# my_kubernetes_manager_tools.py
-# auth_fastmcp.py
-# auth_oidc.py
-# mcp_context.py
-# user_hash.py
+find . -type f | wc -l  # Must match file_count
 ```
 
-## Next Steps After Generation
+---
 
-1. **Review generated code** - Understand the dual-server pattern
-2. **Add your tools** - Edit `*_tools.py` to add Kubernetes operations
-3. **Configure authentication** - Set up Auth0 application and API
-4. **Test locally** - Run the main server and test with MCP Inspector
-5. **Write test plugins** - Add tests for your custom tools
-6. **Build container** - Use provided Dockerfile
-7. **Deploy to Kubernetes** - Use Helm chart with your values
+## CRITICAL: DO NOT During Phase 1
 
-## Best Practices
+These are common failure modes caused by impatience/eagerness:
 
-1. **Always use `generate_server_scaffold()` first** - Don't try to assemble templates manually
-2. **Customize the generated code** - The scaffold is a starting point, not a finished product
-3. **Preserve the dual-server pattern** - Both servers should import from `*_tools.py`
-4. **Add tests as you add tools** - Write test plugins for each new tool
-5. **Use the reference implementation** - See `example/cnpg-mcp/` for a complete working example
+| Anti-Pattern | Why It's Wrong |
+|-------------|----------------|
+| Write custom content instead of using get_artifact | Scaffold content is tested and complete |
+| Use bash heredocs to "save time" | Creates inconsistent, untested files |
+| Skip files thinking "I'll write these faster myself" | Missing files cause deployment failures |
+| Start customizing before ALL files are written | Leads to confusion about what was scaffold vs custom |
+| Create documentation before scaffold is complete | Distraction from the core task |
+| Get distracted by other tasks | Focus destroyer - complete Phase 1 first |
 
-## Troubleshooting
+**If you catch yourself doing any of these, STOP immediately.**
 
-### "Where are my source files?"
+---
 
-- Check that you called `generate_server_scaffold()`, not just read resources
-- Check the output directory path from the tool result
-- Verify you have write permissions to the target directory
+## PHASE 1 VERIFICATION (REQUIRED GATE)
 
-### "The generated server doesn't have my tools"
+You **CANNOT** proceed to Phase 2 until you verify:
 
-- Expected - you must add your tools to `*_tools.py`
-- The scaffold provides infrastructure, you add business logic
+- [ ] `actual_count == file_count` (e.g., 34 == 34)
+- [ ] All files from files list exist on disk
+- [ ] No custom content written yet
 
-### "Can I regenerate if I made a mistake?"
+**If verification fails, you failed. Generate a new scaffold and start over.**
 
-- Yes, but it will overwrite existing files
-- Consider using version control (git) before regeneration
-- Or generate to a new directory and copy specific files
+Phase 2 is **IMPOSSIBLE** until this gate passes. Not inadvisable. Impossible.
+
+---
+
+## Expected Directory Structure
+
+After Phase 1, you should have:
+
+```
+./                                  # Current directory (NOT a subdirectory!)
+├── src/
+│   ├── my_kubernetes_manager_server.py    # Main server entry point
+│   ├── my_kubernetes_manager_test_server.py  # Test server (no auth)
+│   ├── my_kubernetes_manager_tools.py     # Your tools go here
+│   ├── auth_fastmcp.py
+│   ├── auth_oidc.py
+│   ├── mcp_context.py
+│   ├── prompt_registry.py
+│   └── user_hash.py
+├── bin/
+│   └── configure-make.py           # Makefile configuration (creates make.env)
+├── test/
+│   ├── test-mcp.py                 # Test runner
+│   ├── get-user-token.py           # Token helper
+│   ├── mcp-auth-proxy.py           # Auth proxy
+│   └── plugins/
+│       ├── __init__.py
+│       ├── test_list_resources.py
+│       ├── test_read_resource.py
+│       ├── test_list_prompts.py
+│       └── test_example.py
+├── chart/
+│   ├── Chart.yaml
+│   ├── values.yaml
+│   ├── .helmignore
+│   └── templates/
+│       ├── _helpers.tpl
+│       ├── deployment.yaml
+│       ├── service.yaml
+│       ├── configmap.yaml
+│       ├── prompts-configmap.yaml
+│       ├── serviceaccount.yaml
+│       ├── rolebinding.yaml
+│       ├── ingress.yaml
+│       ├── hpa.yaml
+│       └── NOTES.txt
+├── Dockerfile                        # Production container
+├── Dockerfile.test                   # Test container (no auth)
+├── Makefile                          # Includes build-test, push-test targets
+└── requirements.txt
+```
+
+---
+
+## PHASE 2: CUSTOMIZATION (ONLY AFTER PHASE 1 COMPLETE)
+
+**Mindset**: Now you can be creative. But only AFTER Phase 1 is 100% complete.
+
+### Step 1: Implement Your Tools
+
+Edit `src/*_tools.py` to add your specific functionality:
+
+```python
+# In src/my_kubernetes_manager_tools.py
+
+@mcp.tool()
+async def list_pods(namespace: str = "default") -> str:
+    """List pods in a namespace."""
+    # Your implementation here
+    pass
+```
+
+### Step 2: Add Dependencies (if needed)
+
+```bash
+echo "kubernetes" >> requirements.txt
+```
+
+### Step 3: Test Locally
+
+```bash
+pip install -r requirements.txt
+python src/my_kubernetes_manager_server.py --port 4207
+```
+
+### Step 4: Deploy
+
+```bash
+python bin/configure-make.py
+mcp-base setup-oidc
+make build && make push
+make helm-install
+```
+
+---
+
+## Common Mistakes (All Violate Phase 1 Rules)
+
+### ❌ "I only retrieved src/ files"
+
+**Problem**: Impatience led to skipping files.
+**Solution**: The loop must iterate through EVERY file in the list. No exceptions.
+
+### ❌ "I wrote my own Dockerfile"
+
+**Problem**: Eagerness to "improve" led to deviation from scaffold.
+**Solution**: Use EXACT content from get_artifact. Customize in Phase 2 if needed.
+
+### ❌ "I created a project subdirectory"
+
+**Problem**: Writing to `./my-kubernetes-manager/src/...` instead of `./src/...`
+**Solution**: Write to current directory (.) using exact paths from files list.
+
+### ❌ "I used bash heredocs to write files faster"
+
+**Problem**: Bypassing get_artifact creates untested, inconsistent files.
+**Solution**: Always use get_artifact to retrieve scaffold content.
+
+### ❌ "I started adding my tools before all files were written"
+
+**Problem**: Mixing Phase 1 and Phase 2 causes confusion.
+**Solution**: Complete ALL of Phase 1 before starting Phase 2.
+
+---
+
+## Utility Scripts
+
+### Scripts in Scaffold vs mcp-base CLI
+
+**Included in scaffold:**
+- `bin/configure-make.py` - Generates make.env for Makefile configuration
+
+**Available via mcp-base CLI** (not in scaffold):
+```bash
+pip install mcp-base
+mcp-base --help
+
+# Available commands:
+mcp-base add-user          # Add Auth0 users
+mcp-base create-secrets    # Create Kubernetes secrets
+mcp-base setup-oidc        # Configure OIDC provider
+mcp-base setup-rbac        # Set up Kubernetes RBAC
+```
+
+---
+
+## Summary: The Golden Rule
+
+**Phase 1 is MECHANICAL. Phase 2 is CREATIVE.**
+
+In Phase 1, you are a copy machine. You retrieve and write. Nothing more.
+In Phase 2, you are an architect. You customize and extend.
+
+Never mix the two phases.

@@ -11,6 +11,7 @@ all: build
 # Default values (overridden by make.env)
 REGISTRY ?= your-registry.example.com
 IMAGE_NAME ?= {{ server_name_snake }}-server
+TEST_IMAGE_NAME ?= {{ server_name_snake }}-test-server
 TAG ?= latest
 PLATFORM ?= linux/amd64
 CONTAINER_TOOL ?= docker
@@ -19,6 +20,7 @@ HELM_NAMESPACE ?= default
 
 # Derived values
 IMAGE_FULL := $(REGISTRY)/$(IMAGE_NAME):$(TAG)
+TEST_IMAGE_FULL := $(REGISTRY)/$(TEST_IMAGE_NAME):$(TAG)
 
 #
 # Container build targets
@@ -49,6 +51,45 @@ push: ## Push container image to registry
 
 .PHONY: build-push
 build-push: build push ## Build and push container image
+
+#
+# Test container build targets
+#
+
+.PHONY: build-test
+build-test: ## Build test container image
+	@echo "Building test container image: $(TEST_IMAGE_FULL)"
+	$(CONTAINER_TOOL) build --tag $(TEST_IMAGE_FULL) --platform $(PLATFORM) --file Dockerfile.test .
+	@echo "✓ Built: $(TEST_IMAGE_FULL)"
+
+.PHONY: build-test-no-cache
+build-test-no-cache: ## Build test container image without cache
+	@echo "Building test container image (no cache): $(TEST_IMAGE_FULL)"
+	$(CONTAINER_TOOL) build \
+		--no-cache \
+		--tag $(TEST_IMAGE_FULL) \
+		--platform $(PLATFORM) \
+		--file Dockerfile.test \
+		.
+	@echo "✓ Built: $(TEST_IMAGE_FULL)"
+
+.PHONY: push-test
+push-test: ## Push test container image to registry
+	@echo "Pushing test container image: $(TEST_IMAGE_FULL)"
+	$(CONTAINER_TOOL) push $(TEST_IMAGE_FULL)
+	@echo "✓ Pushed: $(TEST_IMAGE_FULL)"
+
+.PHONY: build-push-test
+build-push-test: build-test push-test ## Build and push test container image
+
+.PHONY: build-all
+build-all: build build-test ## Build both production and test container images
+
+.PHONY: push-all
+push-all: push push-test ## Push both production and test container images
+
+.PHONY: build-push-all
+build-push-all: build-push build-push-test ## Build and push both container images
 
 #
 # Helm chart targets
@@ -108,9 +149,19 @@ helm-status: ## Show Helm release status
 #
 
 .PHONY: dev-run
-dev-run: ## Run server locally
-	@echo "Starting server..."
+dev-run: ## Run production server locally
+	@echo "Starting production server..."
 	python src/{{ server_name_snake }}_server.py --port {{ port }}
+
+.PHONY: dev-run-test
+dev-run-test: ## Run test server locally (no auth)
+	@echo "Starting test server (no auth)..."
+	python src/{{ server_name_snake }}_test_server.py --no-auth --port {{ port }}
+
+.PHONY: test
+test: ## Run MCP tests against local test server
+	@echo "Running MCP tests..."
+	python test/test-mcp.py --url http://localhost:{{ port }}/test --no-auth
 
 #
 # Kubernetes targets
@@ -150,7 +201,14 @@ help: ## Show this help message
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-20s\033[0m %s\n", $$1, $$2}'
 	@echo ""
 	@echo "Quick Start:"
-	@echo "  1. make build           # Build container image"
+	@echo "  1. make build           # Build production container image"
 	@echo "  2. make push            # Push to registry"
 	@echo "  3. make helm-deps       # Update chart dependencies"
 	@echo "  4. make helm-install    # Deploy to Kubernetes"
+	@echo ""
+	@echo "Testing:"
+	@echo "  make dev-run-test       # Run test server locally (no auth)"
+	@echo "  make test               # Run MCP tests"
+	@echo "  make build-test         # Build test container image"
+	@echo "  make build-push-test    # Build and push test container"
+	@echo "  make build-push-all     # Build and push both images"

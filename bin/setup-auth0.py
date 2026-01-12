@@ -871,71 +871,6 @@ class Auth0MCPSetup:
 
         return existing, client_id
 
-    def list_connections(self) -> List[Dict[str, Any]]:
-        """List all available connections."""
-        print("\n🔍 Fetching available connections...")
-        
-        try:
-            connections = self._make_request("GET", "/connections")
-            
-            print(f"\n✅ Found {len(connections)} connections:")
-            for i, conn in enumerate(connections, 1):
-                strategy = conn.get("strategy", "unknown")
-                name = conn.get("name", "Unknown")
-                conn_id = conn.get("id", "")
-                is_domain = conn.get("is_domain_connection", False)
-                
-                strategy_label = {
-                    "auth0": "Database",
-                    "google-oauth2": "Google",
-                    "github": "GitHub",
-                    "facebook": "Facebook",
-                    "twitter": "Twitter",
-                    "windowslive": "Microsoft",
-                    "linkedin": "LinkedIn"
-                }.get(strategy, strategy.title())
-                
-                domain_status = "✅ Tenant-level" if is_domain else "⚠️  App-level"
-                
-                print(f"{i}. {name} ({strategy_label}) - {domain_status}")
-                print(f"   ID: {conn_id}")
-            
-            return connections
-            
-        except Exception as e:
-            print(f"❌ Failed to list connections: {e}")
-            raise
-    
-    def promote_connection(self, connection_id: str) -> bool:
-        """Promote connection to tenant-level (idempotent)."""
-        print(f"\n🚀 Promoting connection to tenant-level...")
-        print(f"   Connection ID: {connection_id}")
-        
-        try:
-            connection = self._make_request("GET", f"/connections/{connection_id}")
-            
-            if connection.get("is_domain_connection", False):
-                print("✅ Connection is already tenant-level")
-                return True
-            
-            payload = {
-                "is_domain_connection": True
-            }
-            
-            updated = self._make_request(
-                "PATCH",
-                f"/connections/{connection_id}",
-                data=payload
-            )
-            
-            print(f"✅ Successfully promoted connection to tenant-level!")
-            print(f"   Connection: {updated.get('name', 'Unknown')}")
-            
-            return True
-            
-        except Exception as e:
-            print(f"❌ Failed to promote connection: {e}")
-            return False
 
 
 def validate_domain(domain: str) -> str:
@@ -976,7 +911,6 @@ def save_output_files(
     server_client_id: str,
     server_client_secret: str,
     test_client_id: str,
-    connection_id: str,
     output_dir: str = ".",
     save_config: bool = True,
     use_dcr: bool = False
@@ -1011,9 +945,7 @@ def save_output_files(
             "test_client": {
                 "client_id": test_client_id
             },
-            "connection_id": connection_id,
-            "dcr_enabled": use_dcr,
-            "connection_promoted": True
+            "dcr_enabled": use_dcr
         }
 
         json_file = os.path.join(output_dir, "auth0-config.json")
@@ -1199,7 +1131,6 @@ Examples:
     parser.add_argument("--api-name", help="Name for the MCP API")
     parser.add_argument("--api-identifier", help="API identifier/audience")
     parser.add_argument("--output-dir", default=".", help="Output directory")
-    parser.add_argument("--connection-id", help="Connection ID to promote")
     parser.add_argument("--recreate-client", action="store_true",
                        help="Force recreate management client")
     parser.add_argument("--use-dcr", action="store_true", default=False,
@@ -1226,7 +1157,6 @@ Examples:
         'deployment_name': deployment_name,
         'api_name': config_mgr.get_value('api_name', args.api_name, 'AUTH0_API_NAME', f'{deployment_name} - API'),
         'api_identifier': config_mgr.get_value('api_identifier', args.api_identifier, 'AUTH0_API_IDENTIFIER') or config_mgr.config.get('audience'),
-        'connection_id': config_mgr.get_value('connection_id', args.connection_id, 'AUTH0_CONNECTION_ID'),
         'client_secret': config_mgr.get_value('client_secret', None, 'AUTH0_MGMT_CLIENT_SECRET')
     }
     
@@ -1315,7 +1245,6 @@ Examples:
                 server_client_id=config_mgr.config.get('server_client', {}).get('client_id', ''),
                 server_client_secret=server_client_secret,  # From saved config
                 test_client_id=config_mgr.config.get('test_client', {}).get('client_id', ''),
-                connection_id=config_mgr.config.get('connection_id', ''),
                 output_dir=args.output_dir,
                 save_config=False,  # Don't overwrite config file - preserve existing secrets
                 use_dcr=config_mgr.config.get('dcr_enabled', False)  # From saved config
@@ -1332,7 +1261,6 @@ Examples:
     print(f"Domain:           {config['domain']}")
     print(f"API Name:         {config['api_name']}")
     print(f"API Identifier:   {config['api_identifier']}")
-    print(f"Connection ID:    {config.get('connection_id') or 'Will select'}")
     print(f"Recreate Client:  {args.recreate_client}")
     print()
 
@@ -1399,42 +1327,17 @@ Examples:
             server_client_secret = server_client_config.get('client_secret', '')
             server_client = None
 
-        connection_id = config.get('connection_id')
-        
-        if not connection_id:
-            connections = setup.list_connections()
-            
-            print("\n" + "=" * 70)
-            print("Select a connection to promote to tenant-level")
-            print("=" * 70)
-            
-            while True:
-                choice = input("Enter connection number: ").strip()
-                
-                try:
-                    idx = int(choice) - 1
-                    if 0 <= idx < len(connections):
-                        connection_id = connections[idx]["id"]
-                        print(f"\n✅ Selected: {connections[idx]['name']} ({connection_id})")
-                        break
-                    else:
-                        print(f"❌ Invalid. Enter 1-{len(connections)}")
-                except ValueError:
-                    print("❌ Please enter a number")
-        
-        try:
-            setup.promote_connection(connection_id)
-        except Exception as e:
-            print(f"⚠️  Warning: Connection promotion failed (may already be configured): {e}")
-            print(f"   Continuing with client setup...")
+        # Connection management is now handled per-user via bin/add-user.py
+        # No tenant-level promotion needed
+        print("\nℹ️  Connection setup:")
+        print("   Connections are managed per-user via bin/add-user.py")
+        print("   No tenant-level promotion required")
 
         # Create test client for test harness (Authorization Code Flow + PKCE)
-        # Must be done AFTER connection is promoted
         test_client_config = config.get('test_client', {})
         test_client, test_client_id = setup.create_test_client(
             name=f"{config['deployment_name']} - Test Harness",
             api_identifier=config['api_identifier'],
-            connection_id=connection_id,
             recreate=args.recreate_client
         )
 
@@ -1446,7 +1349,6 @@ Examples:
             server_client_id=server_client_id,
             server_client_secret=server_client_secret,
             test_client_id=test_client_id,
-            connection_id=connection_id,
             output_dir=args.output_dir,
             save_config=False,  # Don't save config here - will be saved with secret preservation logic below
             use_dcr=args.use_dcr
@@ -1465,9 +1367,7 @@ Examples:
                 'api_identifier': config['api_identifier'],
                 'deployment_name': deployment_name,
                 'api_name': config['api_name'],
-                'connection_id': connection_id,
-                'dcr_enabled': args.use_dcr,
-                'connection_promoted': True
+                'dcr_enabled': args.use_dcr
             }
 
             # Save management client credentials (preserve existing secret if not available)
