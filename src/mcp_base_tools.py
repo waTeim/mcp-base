@@ -288,35 +288,48 @@ async def generate_server_scaffold_impl(
     and can be retrieved individually using get_artifact.
 
     ========================================================================
+    CRITICAL: PHASE 2 IS IMPOSSIBLE UNTIL PHASE 1 IS VERIFIED COMPLETE
+    ========================================================================
+
+    This is not advice. It is a logical dependency:
+    - You cannot customize files that don't exist on disk
+    - You cannot test without test-mcp.py written
+    - You cannot build without Dockerfile written
+    - ARTIFACTS EXPIRE - retrieve them NOW or lose them forever
+
+    Phase 2 (customization) is UNDEFINED until Phase 1 is verified complete.
+    Treat Phase 2 as impossible, not just inadvisable, until then.
+
+    ========================================================================
     PHASE 1: SCAFFOLD RETRIEVAL (MECHANICAL - NO CREATIVITY)
     ========================================================================
 
     This is MECHANICAL work. Think: copy machine, not architect.
-    Think: assembling IKEA furniture - follow instructions exactly.
 
     REQUIRED STEPS (no exceptions):
-    1. Call this function to create the scaffold artifacts
+    1. Call this function - note file_count in response
     2. Loop through EVERY file in the returned "files" list
     3. For EACH file: content = get_artifact(project_id, path)
     4. For EACH file: write EXACT content to ./path (current directory)
-    5. Verify file count matches expected
+    5. VERIFY: count files on disk == file_count from response
 
-    DO NOT during Phase 1:
-    - Write custom content instead of using get_artifact results
-    - Use bash heredocs to "save time"
-    - Skip files thinking "I'll write these faster myself"
-    - Start customizing before ALL scaffold files are written
-    - Create documentation before scaffold is complete
-    - Get distracted by other tasks
-
-    These are common failure modes caused by impatience/eagerness.
-    If you catch yourself doing any of these, STOP.
+    ARTIFACTS EXPIRE. Do not pause. Do not skip files. Complete NOW.
 
     ========================================================================
-    PHASE 2: CUSTOMIZATION (ONLY AFTER PHASE 1 COMPLETE)
+    PHASE 1 VERIFICATION (REQUIRED GATE)
     ========================================================================
 
-    Only AFTER all files are written to disk:
+    You CANNOT proceed until you verify:
+    [ ] actual files on disk == file_count (e.g., 34 == 34)
+    [ ] All files from files_list exist on disk
+
+    If verification fails, you failed. Generate a new scaffold.
+
+    ========================================================================
+    PHASE 2: CUSTOMIZATION (IMPOSSIBLE UNTIL PHASE 1 VERIFIED)
+    ========================================================================
+
+    Only after verification passes:
     - Customize the *_tools.py file for your specific functionality
     - Add any additional dependencies to requirements.txt
 
@@ -606,22 +619,24 @@ class TestExampleTool(TestPlugin):
         "files": sorted(files.keys()),
         "resource_links": resource_links,
         "quick_start": [
-            "======== PHASE 1: SCAFFOLD RETRIEVAL (MECHANICAL) ========",
-            f"STEP 1: Loop through ALL {len(files)} files in the 'files' list above",
-            f"STEP 2: For EACH file: content = get_artifact(project_id='{project_id}', path=file_path)",
-            "STEP 3: For EACH file: write EXACT content to ./file_path (current directory)",
-            f"STEP 4: Verify {len(files)} files written to disk",
+            "======== PHASE 2 IS IMPOSSIBLE UNTIL PHASE 1 IS VERIFIED ========",
+            "This is not advice. It is a logical dependency.",
+            "You cannot customize files that don't exist. ARTIFACTS EXPIRE.",
             "",
-            "DO NOT: Write custom content, use bash heredocs, skip files, or start customizing early.",
-            "This is MECHANICAL work. Think: copy machine, not architect.",
+            "======== PHASE 1: RETRIEVE ALL FILES NOW ========",
+            f"STEP 1: Loop through ALL {len(files)} files in 'files' list",
+            f"STEP 2: For EACH: content = get_artifact('{project_id}', path)",
+            "STEP 3: For EACH: write EXACT content to ./path",
+            f"STEP 4: VERIFY: count files on disk == {len(files)}",
             "",
-            "======== PHASE 2: CUSTOMIZATION (ONLY AFTER PHASE 1) ========",
-            f"Implement your tools in src/{server_name_snake}_tools.py",
-            "Install dependencies: pip install -r requirements.txt",
-            f"Test locally: python src/{server_name_snake}_server.py --port {port}",
-            "Configure deployment: python bin/make-config.py",
-            "Build container: make build && make push",
-            "Deploy: make helm-install"
+            "Do not pause. Do not skip. Complete NOW or artifacts expire.",
+            "",
+            "======== PHASE 2: CUSTOMIZATION (IMPOSSIBLE UNTIL VERIFIED) ========",
+            f"Only after {len(files)} files verified on disk:",
+            f"  - Customize src/{server_name_snake}_tools.py",
+            f"  - Test: python src/{server_name_snake}_server.py --port {port}",
+            "  - Configure: python bin/make-config.py",
+            "  - Deploy: make build && make push && make helm-install"
         ],
         "warnings": [],
         "truncated": False

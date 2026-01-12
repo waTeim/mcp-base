@@ -2,16 +2,25 @@
 
 This pattern describes how to use mcp-base to generate a complete MCP server project.
 
-## Two-Phase Workflow
+---
 
-The workflow is divided into two distinct phases with a clear checkpoint between them.
+## CRITICAL: PHASE 2 IS IMPOSSIBLE UNTIL PHASE 1 IS VERIFIED
+
+This is not advice. It is a logical dependency:
+
+- **You cannot customize files that don't exist on disk**
+- **You cannot test a server without test-mcp.py written**
+- **You cannot build a container without Dockerfile written**
+- **ARTIFACTS EXPIRE** - retrieve them NOW or lose them forever
+
+Phase 2 (customization) is **UNDEFINED** until Phase 1 (retrieval) is verified complete.
+Treat Phase 2 work as **impossible**, not just inadvisable, until verification passes.
 
 ---
 
 ## PHASE 1: SCAFFOLD RETRIEVAL (MECHANICAL - NO CREATIVITY)
 
 **Mindset**: This is MECHANICAL work. Think: copy machine, not architect.
-Think: assembling IKEA furniture - follow instructions exactly.
 
 ### Step 1: Generate the Scaffold
 
@@ -74,17 +83,17 @@ These are common failure modes caused by impatience/eagerness:
 
 ---
 
-## CHECKPOINT: Phase 1 Complete?
+## PHASE 1 VERIFICATION (REQUIRED GATE)
 
-Before proceeding to Phase 2, verify:
+You **CANNOT** proceed to Phase 2 until you verify:
 
-- [ ] All files from files list retrieved via get_artifact
-- [ ] All files written to current directory (.)
-- [ ] No custom content written (only scaffold content)
-- [ ] File count matches expected count
-- [ ] Directory structure matches expected structure (see below)
+- [ ] `actual_count == file_count` (e.g., 34 == 34)
+- [ ] All files from files list exist on disk
+- [ ] No custom content written yet
 
-**DO NOT proceed to Phase 2 until all checkboxes are true.**
+**If verification fails, you failed. Generate a new scaffold and start over.**
+
+Phase 2 is **IMPOSSIBLE** until this gate passes. Not inadvisable. Impossible.
 
 ---
 
