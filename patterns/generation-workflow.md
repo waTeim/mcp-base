@@ -64,6 +64,12 @@ for file_path in files:
 find . -type f | wc -l  # Must match file_count
 ```
 
+### Step 4: Make Bin Scripts Executable
+
+```bash
+chmod +x bin/*
+```
+
 ---
 
 ## CRITICAL: DO NOT During Phase 1

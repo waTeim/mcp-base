@@ -490,7 +490,6 @@ async def generate_server_scaffold_impl(
                 files[output_path] = f"# Error rendering: {e}"
 
         files["chart/.helmignore"] = """# Patterns to ignore when building packages.
-*.tgz
 .git/
 .gitignore
 .DS_Store
@@ -630,6 +629,7 @@ class TestExampleTool(TestPlugin):
             f"STEP 2: For EACH: content = get_artifact('{project_id}', path)",
             "STEP 3: For EACH: write EXACT content to ./path",
             f"STEP 4: VERIFY: count files on disk == {len(files)}",
+            "STEP 5: Make bin scripts executable: chmod +x bin/*",
             "",
             "Do not pause. Do not skip. Complete NOW or artifacts expire.",
             "",
