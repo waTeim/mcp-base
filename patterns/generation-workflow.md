@@ -4,23 +4,19 @@ This pattern describes how to use mcp-base to generate a complete MCP server pro
 
 ---
 
-## CRITICAL: PHASE 2 IS IMPOSSIBLE UNTIL PHASE 1 IS VERIFIED
+## PHASE 1: CREATE SCAFFOLD_INVENTORY.md (REQUIRED DELIVERABLE)
 
-This is not advice. It is a logical dependency:
+Your **ONLY** goal in Phase 1 is to produce `SCAFFOLD_INVENTORY.md`.
 
-- **You cannot customize files that don't exist on disk**
-- **You cannot test a server without test-mcp.py written**
-- **You cannot build a container without Dockerfile written**
-- **ARTIFACTS EXPIRE** - retrieve them NOW or lose them forever
+This document IS your deliverable. Quality determines success.
 
-Phase 2 (customization) is **UNDEFINED** until Phase 1 (retrieval) is verified complete.
-Treat Phase 2 work as **impossible**, not just inadvisable, until verification passes.
+**Why this approach works:**
+- "Create inventory" feels productive, not like busywork
+- Line counts and function names are verifiable - you can't fake them
+- Incomplete inventory = broken Phase 2 customization
+- The inventory preserves knowledge even if artifacts expire
 
 ---
-
-## PHASE 1: SCAFFOLD RETRIEVAL (MECHANICAL - NO CREATIVITY)
-
-**Mindset**: This is MECHANICAL work. Think: copy machine, not architect.
 
 ### Step 1: Generate the Scaffold
 
@@ -30,8 +26,8 @@ result = await session.call_tool("generate_server_scaffold", {
 })
 
 project_id = result["project_id"]   # e.g., "my-kubernetes-manager-abc12345"
-files = result["files"]             # List of ALL file paths (e.g., 33 files)
-file_count = result["file_count"]   # Expected count
+files = result["files"]             # List of ALL file paths
+file_count = result["file_count"]   # Expected count (e.g., 34)
 ```
 
 ### Step 2: Retrieve and Write EVERY File
@@ -39,6 +35,8 @@ file_count = result["file_count"]   # Expected count
 **This loop is MANDATORY. No exceptions. No shortcuts.**
 
 ```python
+inventory_entries = []
+
 for file_path in files:
     # Get EXACT content from artifact store
     content = await session.call_tool("get_artifact", {
@@ -55,51 +53,91 @@ for file_path in files:
     with open(file_path, "w") as f:
         f.write(content)
 
+    # Collect inventory data (REQUIRED)
+    lines = content.count('\n') + 1
+    size_bytes = len(content.encode('utf-8'))
+
+    # Extract first 5 function/class names for code files
+    names = []
+    if file_path.endswith('.py'):
+        for line in content.split('\n'):
+            if line.startswith('def ') or line.startswith('class ') or line.startswith('async def '):
+                name = line.split('(')[0].replace('def ', '').replace('class ', '').replace('async ', '').strip()
+                names.append(name)
+                if len(names) >= 5:
+                    break
+
+    inventory_entries.append({
+        "path": file_path,
+        "lines": lines,
+        "bytes": size_bytes,
+        "names": names
+    })
+
     print(f"✓ {file_path}")
 ```
 
-### Step 3: Verify File Count
-
-```bash
-find . -type f | wc -l  # Must match file_count
-```
-
-### Step 4: Make Bin Scripts Executable
+### Step 3: Make Bin Scripts Executable
 
 ```bash
 chmod +x bin/*
 ```
 
+### Step 4: Create SCAFFOLD_INVENTORY.md
+
+**This is the deliverable. Quality of this document determines success.**
+
+```markdown
+# Scaffold Inventory
+
+## Verification Checklist
+- [ ] File count: Retrieved ___ of 34 expected files
+- [ ] All files written to disk with exact content
+- [ ] All files have inventory entries below
+- [ ] No placeholders created
+- [ ] No files skipped
+
+## File Inventory
+
+### src/my_kubernetes_manager_server.py
+- Lines: 142
+- Bytes: 4523
+- Defines: main, create_app, register_routes, handle_mcp, health_check
+
+### src/my_kubernetes_manager_tools.py
+- Lines: 89
+- Bytes: 2341
+- Defines: register_tools, example_tool_impl
+
+[... entry for EVERY file ...]
+```
+
 ---
 
-## CRITICAL: DO NOT During Phase 1
+## CRITICAL: Why This Approach Prevents Shortcuts
 
-These are common failure modes caused by impatience/eagerness:
+| Old Approach | Problem | New Approach |
+|-------------|---------|--------------|
+| "Copy all files" | Feels like busywork, tempting to skip | "Create inventory document" feels productive |
+| Verification is a gate | Can rationalize skipping the gate | Inventory IS the deliverable |
+| No verifiable output | Easy to claim "done" without doing | Line counts, function names are verifiable |
+| Phase 2 seems like "real work" | Pressure to rush to Phase 2 | Phase 2 quality depends on inventory quality |
 
-| Anti-Pattern | Why It's Wrong |
-|-------------|----------------|
-| Write custom content instead of using get_artifact | Scaffold content is tested and complete |
-| Use bash heredocs to "save time" | Creates inconsistent, untested files |
-| Skip files thinking "I'll write these faster myself" | Missing files cause deployment failures |
-| Start customizing before ALL files are written | Leads to confusion about what was scaffold vs custom |
-| Create documentation before scaffold is complete | Distraction from the core task |
-| Get distracted by other tasks | Focus destroyer - complete Phase 1 first |
-
-**If you catch yourself doing any of these, STOP immediately.**
+**You cannot fake line counts or function names without reading the files.**
 
 ---
 
-## PHASE 1 VERIFICATION (REQUIRED GATE)
+## PHASE 1 VERIFICATION (Built Into Inventory)
 
-You **CANNOT** proceed to Phase 2 until you verify:
+The verification checklist at the top of SCAFFOLD_INVENTORY.md must show:
 
 - [ ] `actual_count == file_count` (e.g., 34 == 34)
 - [ ] All files from files list exist on disk
-- [ ] No custom content written yet
+- [ ] All files have inventory entries with line counts and names
+- [ ] No placeholders created
+- [ ] No files skipped
 
-**If verification fails, you failed. Generate a new scaffold and start over.**
-
-Phase 2 is **IMPOSSIBLE** until this gate passes. Not inadvisable. Impossible.
+**If verification fails, your Phase 2 customizations WILL FAIL.**
 
 ---
 
@@ -109,6 +147,7 @@ After Phase 1, you should have:
 
 ```
 ./                                  # Current directory (NOT a subdirectory!)
+├── SCAFFOLD_INVENTORY.md           # YOUR PHASE 1 DELIVERABLE
 ├── src/
 │   ├── my_kubernetes_manager_server.py    # Main server entry point
 │   ├── my_kubernetes_manager_test_server.py  # Test server (no auth)
@@ -153,9 +192,12 @@ After Phase 1, you should have:
 
 ---
 
-## PHASE 2: CUSTOMIZATION (ONLY AFTER PHASE 1 COMPLETE)
+## PHASE 2: CUSTOMIZE USING INVENTORY (ONLY AFTER PHASE 1 COMPLETE)
 
-**Mindset**: Now you can be creative. But only AFTER Phase 1 is 100% complete.
+**Given SCAFFOLD_INVENTORY.md showing all scaffold components:**
+
+Refer to the inventory to understand what exists before modifying.
+Your customizations WILL FAIL if Phase 1 inventory was incomplete.
 
 ### Step 1: Implement Your Tools
 
@@ -197,30 +239,35 @@ make helm-install
 
 ## Common Mistakes (All Violate Phase 1 Rules)
 
-### ❌ "I only retrieved src/ files"
+### "I only retrieved src/ files"
 
 **Problem**: Impatience led to skipping files.
 **Solution**: The loop must iterate through EVERY file in the list. No exceptions.
 
-### ❌ "I wrote my own Dockerfile"
+### "I wrote my own Dockerfile"
 
 **Problem**: Eagerness to "improve" led to deviation from scaffold.
 **Solution**: Use EXACT content from get_artifact. Customize in Phase 2 if needed.
 
-### ❌ "I created a project subdirectory"
+### "I created a project subdirectory"
 
 **Problem**: Writing to `./my-kubernetes-manager/src/...` instead of `./src/...`
 **Solution**: Write to current directory (.) using exact paths from files list.
 
-### ❌ "I used bash heredocs to write files faster"
+### "I used bash heredocs to write files faster"
 
 **Problem**: Bypassing get_artifact creates untested, inconsistent files.
 **Solution**: Always use get_artifact to retrieve scaffold content.
 
-### ❌ "I started adding my tools before all files were written"
+### "I started adding my tools before all files were written"
 
 **Problem**: Mixing Phase 1 and Phase 2 causes confusion.
-**Solution**: Complete ALL of Phase 1 before starting Phase 2.
+**Solution**: Complete ALL of Phase 1 (including SCAFFOLD_INVENTORY.md) before starting Phase 2.
+
+### "I skipped creating SCAFFOLD_INVENTORY.md"
+
+**Problem**: Without the inventory, there's no proof Phase 1 was completed correctly.
+**Solution**: The inventory IS the deliverable. Create it with full details for every file.
 
 ---
 
@@ -247,9 +294,9 @@ mcp-base setup-rbac        # Set up Kubernetes RBAC
 
 ## Summary: The Golden Rule
 
-**Phase 1 is MECHANICAL. Phase 2 is CREATIVE.**
+**Phase 1 deliverable is SCAFFOLD_INVENTORY.md. Phase 2 uses the inventory.**
 
-In Phase 1, you are a copy machine. You retrieve and write. Nothing more.
-In Phase 2, you are an architect. You customize and extend.
+In Phase 1, you retrieve files AND create a detailed inventory. The inventory proves completeness.
+In Phase 2, you customize using the inventory as your reference.
 
-Never mix the two phases.
+Never skip the inventory. It's not optional - it IS the deliverable.
