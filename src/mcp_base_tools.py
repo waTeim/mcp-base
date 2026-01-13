@@ -480,6 +480,7 @@ async def generate_server_scaffold_impl(
             ("helm/templates/rolebinding.yaml.j2", "chart/templates/rolebinding.yaml"),
             ("helm/templates/ingress.yaml.j2", "chart/templates/ingress.yaml"),
             ("helm/templates/hpa.yaml.j2", "chart/templates/hpa.yaml"),
+            ("helm/templates/NOTES.txt.j2", "chart/templates/NOTES.txt"),
         ]
 
         for template_path, output_path in helm_templates:
@@ -493,20 +494,6 @@ async def generate_server_scaffold_impl(
 .git/
 .gitignore
 .DS_Store
-"""
-
-        files["chart/templates/NOTES.txt"] = f"""{{{{- $fullName := include "{chart_name}.fullname" . -}}}}
-1. Get the application URL by running these commands:
-{{{{- if .Values.ingress.enabled }}}}
-  http{{{{- if .Values.ingress.tls.enabled }}}}s{{{{- end }}}}://{{{{ .Values.ingress.host }}}}
-{{{{- else if contains "NodePort" .Values.service.type }}}}
-  export NODE_PORT=$(kubectl get --namespace {{{{ .Release.Namespace }}}} -o jsonpath="{{{{.spec.ports[0].nodePort}}}}" services {{{{ $fullName }}}})
-  export NODE_IP=$(kubectl get nodes --namespace {{{{ .Release.Namespace }}}} -o jsonpath="{{{{.items[0].status.addresses[0].address}}}}")
-  echo http://$NODE_IP:$NODE_PORT
-{{{{- else if contains "ClusterIP" .Values.service.type }}}}
-  kubectl --namespace {{{{ .Release.Namespace }}}} port-forward svc/{{{{ $fullName }}}} {port}:{port}
-  echo "Visit http://127.0.0.1:{port}/mcp"
-{{{{- end }}}}
 """
 
     # Test framework
