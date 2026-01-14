@@ -117,8 +117,16 @@ oidc:
   # This should match what your IdP issues in the 'aud' claim
   audience: "https://your-api.example.com/mcp"
 
-  # REQUIRED: Auth0 application client ID (pre-registered application)
+  # REQUIRED: OIDC application client ID (pre-registered application)
   clientId: ""
+
+  # OPTIONAL: OIDC credentials secret name
+  # Default: {{ .Release.Name }}-oidc-credentials
+  credentialsSecretName: ""
+
+  # OPTIONAL: Client secret key name inside the credentials secret
+  # Common values: client-secret, server-client-secret (Auth0)
+  clientSecretKey: "client-secret"
 
   # OPTIONAL: Override JWKS URI (auto-discovered from issuer by default)
   # jwksUri: ""
@@ -126,11 +134,10 @@ oidc:
   # OPTIONAL: Required OAuth2 scope (default: openid)
   # scope: "openid"
 
-  # NOTE: Auth0 credentials secret is automatically derived from release name
-  # Secret name will be: {% raw %}{{ .Release.Name }}{% endraw %}-auth0-credentials
+  # NOTE: OIDC credentials secret is automatically derived from release name
+  # Secret name will be: {% raw %}{{ .Release.Name }}{% endraw %}-oidc-credentials
   #
-  # Create the secret using:
-  #   python bin/create_secrets.py --namespace <namespace> --release-name <release-name>
+  # Create the secret using your provider tooling (Auth0 supported)
 
 {% if operator_cluster_roles %}
 # Operator RBAC Configuration

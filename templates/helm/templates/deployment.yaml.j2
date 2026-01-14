@@ -52,9 +52,9 @@ spec:
             - name: oidc-config
               mountPath: /etc/mcp/oidc
               readOnly: true
-            # Mount Auth0 credentials secret
-            - name: auth0-credentials
-              mountPath: /etc/mcp/secrets/auth0
+            # Mount OIDC client credentials secret
+            - name: oidc-credentials
+              mountPath: /etc/mcp/secrets/oidc
               readOnly: true
             # Mount JWT signing key secret
             - name: jwt-signing-key
@@ -113,8 +113,8 @@ spec:
             - name: oidc-config
               mountPath: /etc/mcp
               readOnly: true
-            - name: auth0-credentials
-              mountPath: /etc/mcp/secrets/auth0
+            - name: oidc-credentials
+              mountPath: /etc/mcp/secrets/oidc
               readOnly: true
 
           livenessProbe:
@@ -150,13 +150,13 @@ spec:
             items:
               - key: oidc.yaml
                 path: oidc.yaml
-        # Mount Auth0 credentials secret (derived from release name)
-        - name: auth0-credentials
+        # Mount OIDC client credentials secret (derived from release name)
+        - name: oidc-credentials
           secret:
-            secretName: {{ .Release.Name }}-auth0-credentials
+            secretName: {{ .Values.oidc.credentialsSecretName | default (printf "%s-oidc-credentials" .Release.Name) }}
             items:
-              - key: server-client-secret
-                path: server-client-secret
+              - key: {{ .Values.oidc.clientSecretKey | default "client-secret" }}
+                path: {{ .Values.oidc.clientSecretKey | default "client-secret" }}
         # Mount JWT signing key and storage encryption key secret
         - name: jwt-signing-key
           secret:

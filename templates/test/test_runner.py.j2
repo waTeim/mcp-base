@@ -6,7 +6,7 @@ Primary testing tool with two modes:
 1. Automated tests via plugin system (default)
 2. Interactive Inspector UI (--use-inspector flag)
 
-Automatically obtains tokens from auth0-config.json if available.
+Automatically obtains tokens from oidc-config.json if available.
 
 Development Mode (No-Auth):
   For rapid development and testing without authentication:
@@ -272,9 +272,14 @@ def check_npx() -> bool:
     return shutil.which("npx") is not None
 
 
-def load_auth0_config(config_path: str = "auth0-config.json") -> Optional[Dict[str, Any]]:
-    """Load Auth0 configuration from file."""
+def load_oidc_config(config_path: str = "oidc-config.json") -> Optional[Dict[str, Any]]:
+    """Load OIDC configuration from file (Auth0 supported)."""
     config_file = Path(config_path)
+    if not config_file.exists() and config_path == "oidc-config.json":
+        legacy = Path("auth0-config.json")
+        if legacy.exists():
+            config_file = legacy
+
     if not config_file.exists():
         return None
 
@@ -286,12 +291,12 @@ def load_auth0_config(config_path: str = "auth0-config.json") -> Optional[Dict[s
         return None
 
 
-def get_token_from_auth0(config: Dict[str, Any]) -> Optional[str]:
+def get_token_from_oidc(config: Dict[str, Any]) -> Optional[str]:
     """
     Get an access token using user authentication (Authorization Code + PKCE).
 
     Args:
-        config: Auth0 configuration dictionary
+        config: OIDC configuration dictionary
 
     Returns:
         Access token or None if failed
@@ -359,7 +364,7 @@ def discover_plugins(plugins_dir: Path) -> List:
 
 
 async def run_automated_tests(transport: str, url: str = None, token: str = None,
-                              token_file: str = None, auth0_config_path: str = "auth0-config.json",
+                              token_file: str = None, oidc_config_path: str = "oidc-config.json",
                               output_file: str = None, output_format: str = "json",
                               no_auth: bool = False, debug_log: str = None) -> int:
     """
@@ -370,7 +375,7 @@ async def run_automated_tests(transport: str, url: str = None, token: str = None
         url: HTTP URL for MCP server
         token: JWT bearer token for HTTP authentication
         token_file: Path to file containing JWT token
-        auth0_config_path: Path to auth0-config.json for automatic token retrieval
+        oidc_config_path: Path to oidc-config.json for automatic token retrieval
         output_file: Path to save test results (optional)
         output_format: Format for saved results ('json' or 'junit')
         no_auth: Skip authentication (for no-auth server mode)
@@ -428,11 +433,11 @@ async def run_automated_tests(transport: str, url: str = None, token: str = None
             return 1
         token_source = f"file: {token_file}"
     else:
-        auth0_config = load_auth0_config(auth0_config_path)
-        if auth0_config:
-            print(Colors.green(f"✅ Found {auth0_config_path}"))
+        oidc_config = load_oidc_config(oidc_config_path)
+        if oidc_config:
+            print(Colors.green(f"✅ Found {oidc_config_path}"))
             print()
-            auth_token = get_token_from_auth0(auth0_config)
+            auth_token = get_token_from_oidc(oidc_config)
             if auth_token:
                 token_source = "user authentication (Authorization Code Flow)"
             else:
@@ -440,7 +445,7 @@ async def run_automated_tests(transport: str, url: str = None, token: str = None
                 print(Colors.red("❌ Failed to obtain authentication token"))
                 return 1
         else:
-            print(Colors.yellow(f"⚠️  No {auth0_config_path} found"))
+            print(Colors.yellow(f"⚠️  No {oidc_config_path} found"))
             print("   Attempting connection without authentication...")
             print()
 
@@ -455,7 +460,7 @@ async def run_automated_tests(transport: str, url: str = None, token: str = None
         # Construct MCP endpoint URL
         if auth_token and not url.endswith(('/mcp', '/mcp/', '/test', '/test/')):
             mcp_url = f"{url}/test/"
-            print(Colors.blue("Using /test/ endpoint (Auth0 token with standard OIDC)"))
+            print(Colors.blue("Using /test/ endpoint (OIDC token with standard OIDC)"))
         else:
             mcp_url = f"{url}/mcp" if not url.endswith(('/mcp', '/mcp/', '/test', '/test/')) else url
 
@@ -742,9 +747,14 @@ Notes:
         help='File containing JWT bearer token'
     )
     parser.add_argument(
+        '--oidc-config',
+        default='oidc-config.json',
+        help='Path to oidc-config.json (default: ./oidc-config.json)'
+    )
+    parser.add_argument(
         '--auth0-config',
-        default='auth0-config.json',
-        help='Path to auth0-config.json (default: ./auth0-config.json)'
+        dest='oidc_config',
+        help='Deprecated alias for --oidc-config'
     )
     parser.add_argument(
         '--use-inspector',
@@ -808,7 +818,7 @@ Notes:
             url=args.url,
             token=args.token,
             token_file=args.token_file,
-            auth0_config_path=args.auth0_config,
+            oidc_config_path=args.oidc_config,
             output_file=args.output_file,
             output_format=args.output_format,
             no_auth=args.no_auth,
@@ -844,11 +854,11 @@ Notes:
             sys.exit(1)
         token_source = f"file: {args.token_file}"
     else:
-        auth0_config = load_auth0_config(args.auth0_config)
-        if auth0_config:
-            print(Colors.green(f"✅ Found {args.auth0_config}"))
+        oidc_config = load_oidc_config(args.oidc_config)
+        if oidc_config:
+            print(Colors.green(f"✅ Found {args.oidc_config}"))
             print()
-            token = get_token_from_auth0(auth0_config)
+            token = get_token_from_oidc(oidc_config)
             if token:
                 token_source = "user authentication (Authorization Code Flow)"
             else:
@@ -861,7 +871,7 @@ Notes:
                     print(Colors.yellow("⚠️  Could not automatically obtain token"))
                     print()
         else:
-            print(Colors.yellow(f"⚠️  No {args.auth0_config} found"))
+            print(Colors.yellow(f"⚠️  No {args.oidc_config} found"))
             print()
 
     print(f"{Colors.blue('Transport:')} HTTP")
