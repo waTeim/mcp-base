@@ -82,7 +82,7 @@ Step 1: Generate scaffold
 
 Step 2: Retrieve and write EVERY file (no exceptions)
    for each file_path in files_list:
-       content = get_artifact(project_id, file_path)
+       content = resources/read(uri=f"scaffold://{project_id}/{file_path}")
        write content to ./file_path (EXACT content, no modifications)
 
 Step 3: Verify file count BEFORE proceeding
@@ -114,7 +114,6 @@ Only after verification passes:
 
 Available tools:
 - generate_server_scaffold: Create complete server project structure
-- get_artifact: Retrieve a specific file from a generated scaffold
 - list_artifacts: List all files in a scaffold project
 - render_template: Render individual templates with parameters
 - list_templates: List available templates

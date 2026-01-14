@@ -174,43 +174,14 @@ Generates complete MCP server project:
 
 ### Artifact Retrieval Tools
 
-#### `get_retrieval_script()`
-**Returns script for efficient large file retrieval - prevents context bloat**
-
-Returns a JSON object containing:
-- `script`: Complete Python script for artifact retrieval
-- `filename`: Suggested filename ("retrieve-artifacts.py")
-- `usage`: Detailed usage instructions for AI agents
-- `example`: Example workflow showing integration
-
-**Use this for files >1000 lines** to avoid loading large files into context window.
-
-**Workflow:**
-1. Call `get_retrieval_script()` to get the script
-2. Write script to disk: `retrieve-artifacts.py`
-3. Ask Claude Code to execute: "Run retrieve-artifacts.py to fetch FILES from PROJECT_ID"
-4. Files are written directly to disk without consuming context
-
-**Context savings:** ~97% reduction (28,000 tokens → 500 tokens for large files)
-
-#### `get_artifact(project_id, file_path)`
-**Retrieve individual generated files - loads content into context**
-
-Parameters:
-- `project_id`: Project ID from scaffold generation
-- `file_path`: Relative path to file (e.g., "src/my_server.py")
-
-Returns file content as string.
-
-**Use this for small files <500 lines** that you need to read or discuss.
-
 #### `list_artifacts(project_id)`
 **List all files in a generated project**
 
 Parameters:
 - `project_id`: Project ID from scaffold generation
 
-Returns JSON list of all files with metadata (path, size, type).
+Returns JSON list of all files with metadata (path, size, type). Use
+`resources/read` with `scaffold://{project_id}/{path}` to fetch file content.
 
 ## Template Variables
 
@@ -243,23 +214,11 @@ scaffold = await mcp.call_tool("generate_server_scaffold", {
 })
 project_id = scaffold["project_id"]
 
-# 4. Get retrieval script for large files (>1000 lines)
-script_result = await mcp.call_tool("get_retrieval_script")
-script_data = json.loads(script_result)
+# 4. List artifacts (paths only)
+artifacts = await mcp.call_tool("list_artifacts", {"project_id": project_id})
 
-# Write script to disk
-Write("retrieve-artifacts.py", script_data["script"])
-
-# Ask Claude Code to execute for large files
-"Run: python retrieve-artifacts.py {project_id} bin/setup-auth0.py bin/setup-rbac.py"
-# Files written directly to disk, no context bloat!
-
-# 5. Use get_artifact for small files (<500 lines) you need to read
-small_file = await mcp.call_tool("get_artifact", {
-    "project_id": project_id,
-    "file_path": "src/my_server.py"
-})
-# Content loaded into context for discussion/modification
+# 5. Read a small file via resources/read (content loads into context)
+small_file = await mcp.read_resource(f"scaffold://{project_id}/src/my_server.py")
 
 # 6. Or render individual template
 template = await mcp.call_tool("render_template", {

@@ -378,7 +378,7 @@ async def generate_server_scaffold_impl(
             "server_name": "Server Name",
             "file_count": 37,
             "files": ["Dockerfile", "src/...", ...],
-            "resource_links": [{"uri": "artifact://...", "path": "...", ...}],
+            "resource_links": [{"uri": "scaffold://...", "path": "...", ...}],
             "quick_start": ["..."],
             "warnings": [],
             "truncated": false
@@ -591,7 +591,7 @@ class TestExampleTool(TestPlugin):
         mime_type = get_mime_type_for_path(path)
         filename = path.split("/")[-1]
         resource_links.append({
-            "uri": f"artifact://{project_id}/{path}",
+            "uri": f"scaffold://{project_id}/{path}",
             "path": path,
             "name": filename,
             "mimeType": mime_type
@@ -824,15 +824,18 @@ def register_resources(mcp):
             project_id: The project identifier (e.g., "my-server-abc12345")
 
         Returns:
-            JSON list of artifact paths and URIs
+            JSON list of artifact paths and scaffold:// URIs
         """
         artifacts = artifact_store.list_project(project_id)
         if not artifacts:
             return f"Error: No artifacts found for project: {project_id}"
-        return json.dumps([{"path": path, "uri": uri} for path, uri in artifacts], indent=2)
+        return json.dumps(
+            [{"path": path, "uri": f"scaffold://{project_id}/{path}"} for path, _ in artifacts],
+            indent=2
+        )
 
     # Dynamic artifact resource - read individual scaffold files
-    @mcp.resource("scaffold://{project_id}/{path}")
+    @mcp.resource("scaffold://{project_id}/{path*}")
     def read_scaffold_file(project_id: str, path: str) -> str:
         """
         Read a scaffold file from a generated project.
@@ -944,38 +947,6 @@ def register_tools(mcp):
             include_test=include_test
         )
 
-    @mcp.tool(name="get_artifact")
-    async def get_artifact(project_id: str, path: str) -> str:
-        """
-        Retrieve a generated artifact file by project ID and path.
-
-        After calling generate_server_scaffold, use this tool to retrieve
-        individual generated files. This allows fetching one file at a time
-        instead of all files at once, reducing context usage.
-
-        CRITICAL: If this tool returns an error, DO NOT create replacement files.
-        Instead, use list_artifacts to see available files, or report the error
-        and ask the user for guidance.
-
-        Args:
-            project_id: The project identifier returned by generate_server_scaffold
-                        (e.g., "my-server-abc12345")
-            path: The file path within the project (e.g., "src/my_server.py",
-                  "Makefile", "chart/values.yaml")
-
-        Returns:
-            File content as text, or error message if not found
-        """
-        artifact = artifact_store.get(project_id, path)
-        if artifact is None:
-            # List available files to help the user
-            available = artifact_store.list_project(project_id)
-            if not available:
-                return f"Error: Project '{project_id}' not found. No artifacts stored."
-            paths = [p for p, _ in available]
-            return f"Error: Artifact '{path}' not found in project '{project_id}'.\n\nAvailable files:\n" + "\n".join(f"  - {p}" for p in paths[:20])
-        return artifact.content
-
     @mcp.tool(name="list_artifacts")
     async def list_artifacts(project_id: str) -> str:
         """
@@ -1005,4 +976,3 @@ def register_tools(mcp):
             "file_count": len(artifacts),
             "files": [path for path, _ in artifacts]
         }, indent=2)
-
