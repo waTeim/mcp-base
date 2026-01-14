@@ -34,15 +34,15 @@ file_count = result["file_count"]   # Expected count (e.g., 34)
 
 **This loop is MANDATORY. No exceptions. No shortcuts.**
 
+Use `resources/read` with the `scaffold://` URIs from `scaffold_resources`:
+
 ```python
 inventory_entries = []
+scaffold_resources = result["scaffold_resources"]  # Dict of path -> scaffold:// URI
 
-for file_path in files:
-    # Get EXACT content from artifact store
-    content = await session.call_tool("get_artifact", {
-        "project_id": project_id,
-        "path": file_path
-    })
+for file_path, resource_uri in scaffold_resources.items():
+    # Get EXACT content via resources/read
+    content = await session.read_resource(resource_uri)
 
     # Create parent directories if needed
     parent_dir = os.path.dirname(file_path)
@@ -247,7 +247,7 @@ make helm-install
 ### "I wrote my own Dockerfile"
 
 **Problem**: Eagerness to "improve" led to deviation from scaffold.
-**Solution**: Use EXACT content from get_artifact. Customize in Phase 2 if needed.
+**Solution**: Use EXACT content from resources/read. Customize in Phase 2 if needed.
 
 ### "I created a project subdirectory"
 
@@ -256,8 +256,8 @@ make helm-install
 
 ### "I used bash heredocs to write files faster"
 
-**Problem**: Bypassing get_artifact creates untested, inconsistent files.
-**Solution**: Always use get_artifact to retrieve scaffold content.
+**Problem**: Bypassing resources/read creates untested, inconsistent files.
+**Solution**: Always use resources/read with scaffold:// URIs to retrieve scaffold content.
 
 ### "I started adding my tools before all files were written"
 
