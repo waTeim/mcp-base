@@ -107,11 +107,10 @@ jwt:
 oidc:
   # REQUIRED: OIDC Issuer URL (base URL of your identity provider)
   # Examples:
-  #   Auth0: https://your-tenant.auth0.com
-  #   Keycloak: https://keycloak.example.com/realms/your-realm
-  #   Okta: https://your-org.okta.com/oauth2/default
-  #   Azure AD: https://login.microsoftonline.com/{tenant-id}/v2.0
-  issuer: "https://your-tenant.auth0.com"
+  #   https://keycloak.example.com/realms/your-realm
+  #   https://your-org.okta.com/oauth2/default
+  #   https://login.microsoftonline.com/{tenant-id}/v2.0
+  issuer: "https://your-issuer.example.com"
 
   # REQUIRED: Expected audience claim in JWT tokens
   # This should match what your IdP issues in the 'aud' claim
@@ -125,7 +124,7 @@ oidc:
   credentialsSecretName: ""
 
   # OPTIONAL: Client secret key name inside the credentials secret
-  # Common values: client-secret, server-client-secret (Auth0)
+  # Common values: client-secret, server-client-secret
   clientSecretKey: "client-secret"
 
   # OPTIONAL: Override JWKS URI (auto-discovered from issuer by default)
@@ -137,7 +136,7 @@ oidc:
   # NOTE: OIDC credentials secret is automatically derived from release name
   # Secret name will be: {% raw %}{{ .Release.Name }}{% endraw %}-oidc-credentials
   #
-  # Create the secret using your provider tooling (Auth0 supported)
+  # Create the secret using your provider tooling
 
 {% if operator_cluster_roles %}
 # Operator RBAC Configuration
