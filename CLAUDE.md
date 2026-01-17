@@ -231,22 +231,25 @@ template = await mcp.call_tool("render_template", {
 
 ### Tool Implementation
 ```python
-@mcp.tool(name="my_tool")
 @with_mcp_context
-async def my_tool(ctx: MCPContext, param: str) -> str:
+async def my_tool_impl(ctx: MCPContext, param: str) -> str:
     """Tool description for LLM consumption."""
     user = ctx.preferred_username or ctx.user_id
     await ctx.info(f"User {user} calling my_tool")
 
     result = await asyncio.to_thread(k8s_api.method, ...)
     return truncate_response(format_result(result))
+
+@mcp.tool(name="my_tool")
+async def my_tool(param: str, ctx: Context = None) -> str:
+    return await my_tool_impl(ctx=ctx, param=param)
 ```
 
 ### Authentication Flow
 1. FastMCP Auth0Provider handles OAuth
 2. Redis stores session tokens (encrypted with Fernet)
 3. MCPContext extracts user info from JWT
-4. with_mcp_context decorator wraps tools
+4. with_mcp_context wraps tool implementations; @mcp.tool passes Context through
 
 ### Helm Chart Structure
 - Created via `helm create` then modified

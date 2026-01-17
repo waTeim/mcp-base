@@ -5,12 +5,17 @@ This module provides MCPContext class and with_mcp_context decorator for
 extracting user information from JWT tokens in HTTP requests.
 
 Usage:
+    from fastmcp import Context
     from mcp_context import MCPContext, with_mcp_context
 
     @with_mcp_context
-    async def my_tool(context: MCPContext, param1: str) -> str:
+    async def my_tool_impl(context: MCPContext, param1: str) -> str:
         # context.user_id is available here
         return f"User {context.user_id} called with {param1}"
+
+    @mcp.tool(name="my_tool")
+    async def my_tool(param1: str, ctx: Context = None) -> str:
+        return await my_tool_impl(ctx=ctx, param1=param1)
 """
 
 import functools
@@ -106,9 +111,13 @@ def with_mcp_context(func):
 
     Usage:
         @with_mcp_context
-        async def my_tool(context: MCPContext, param1: str) -> str:
+        async def my_tool_impl(context: MCPContext, param1: str) -> str:
             # context.user_id is available here
             return f"User {context.user_id} called with {param1}"
+
+        @mcp.tool(name="my_tool")
+        async def my_tool(param1: str, ctx: Context = None) -> str:
+            return await my_tool_impl(ctx=ctx, param1=param1)
 
     This allows all user identification logic to be in one place rather than
     duplicated in every tool function.

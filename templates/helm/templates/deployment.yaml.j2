@@ -155,8 +155,8 @@ spec:
           secret:
             secretName: {{ .Values.oidc.credentialsSecretName | default (printf "%s-oidc-credentials" .Release.Name) }}
             items:
-              - key: {{ .Values.oidc.clientSecretKey | default "client-secret" }}
-                path: {{ .Values.oidc.clientSecretKey | default "client-secret" }}
+              - key: {{ .Values.oidc.clientSecretKey | default "server-client-secret" }}
+                path: {{ .Values.oidc.clientSecretKey | default "server-client-secret" }}
         # Mount JWT signing key and storage encryption key secret
         - name: jwt-signing-key
           secret:

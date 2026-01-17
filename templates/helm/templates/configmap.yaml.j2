@@ -23,7 +23,7 @@ data:
     client_id: {{ .Values.oidc.clientId | quote }}
 
     # Path to server client secret file (mounted from Kubernetes Secret)
-    client_secret_file: '/etc/mcp/secrets/oidc/{{ .Values.oidc.clientSecretKey | default "client-secret" }}'
+    client_secret_file: '/etc/mcp/secrets/oidc/{{ .Values.oidc.clientSecretKey | default "server-client-secret" }}'
 
     # Path to JWT signing key file (mounted from Kubernetes Secret)
     jwt_signing_key_file: "/etc/mcp/secrets/jwt-signing-key"
