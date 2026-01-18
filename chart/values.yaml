@@ -108,6 +108,14 @@ oidc:
   # REQUIRED: Auth0 application client ID
   clientId: ""
 
+  # OPTIONAL: Public URL of this MCP server (for OAuth callbacks)
+  # If not set, auto-generated from ingress.host
+  # IMPORTANT: Set this if your server is behind a reverse proxy or load balancer
+  # Examples:
+  #   https://mcp.example.com
+  #   https://api.example.com/mcp-server
+  publicUrl: ""
+
   # OPTIONAL: Override JWKS URI (auto-discovered from issuer by default)
   # jwksUri: ""
 

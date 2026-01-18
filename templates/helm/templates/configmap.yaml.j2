@@ -35,9 +35,17 @@ data:
     # REQUIRED: Server Configuration
     # ========================================================================
 
-    {{- if and .Values.ingress.enabled .Values.ingress.host }}
-    # Public URL of this MCP server
+    # Public URL of this MCP server (for OAuth callbacks)
+    {{- if .Values.oidc.publicUrl }}
+    # Explicitly configured public URL
+    public_url: {{ .Values.oidc.publicUrl | quote }}
+    {{- else if and .Values.ingress.enabled .Values.ingress.host }}
+    # Auto-generated from ingress configuration
     public_url: {{ if .Values.ingress.tls.enabled }}"https://{{ .Values.ingress.host }}"{{ else }}"http://{{ .Values.ingress.host }}"{{ end }}
+    {{- else }}
+    # WARNING: No public_url configured - OAuth callbacks may fail!
+    # Set oidc.publicUrl or enable ingress with a host
+    # public_url: ""
     {{- end }}
 
     # ========================================================================

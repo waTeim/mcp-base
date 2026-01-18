@@ -119,6 +119,14 @@ oidc:
   # REQUIRED: OIDC application client ID (pre-registered application)
   clientId: ""
 
+  # OPTIONAL: Public URL of this MCP server (for OAuth callbacks)
+  # If not set, auto-generated from ingress.host
+  # IMPORTANT: Set this if your server is behind a reverse proxy or load balancer
+  # Examples:
+  #   https://mcp.example.com
+  #   https://api.example.com/mcp-server
+  publicUrl: ""
+
   # OPTIONAL: OIDC credentials secret name
   # Default: {{ .Release.Name }}-oidc-credentials
   credentialsSecretName: ""
