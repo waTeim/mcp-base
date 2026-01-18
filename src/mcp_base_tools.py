@@ -279,7 +279,8 @@ async def generate_server_scaffold_impl(
     default_namespace: str = "default",
     operator_cluster_roles: Optional[str] = None,
     include_helm: bool = True,
-    include_test: bool = True
+    include_test: bool = True,
+    auth_type: Literal["auth0", "oidc"] = "auth0"
 ) -> Dict[str, Any]:
     """
     Generate complete MCP server project scaffold.
@@ -367,6 +368,8 @@ async def generate_server_scaffold_impl(
         operator_cluster_roles: Comma-separated ClusterRoles to bind (e.g., "my-operator-edit,other-operator-view")
         include_helm: Include Helm chart (default: True)
         include_test: Include test framework (default: True)
+        auth_type: Authentication type - "auth0" for Auth0 with FastMCP OAuth Proxy,
+                   "oidc" for generic OIDC providers like Dex, Keycloak (default: "auth0")
 
     Returns:
         JSON object with project metadata, file list, and scaffold_resources dict.
@@ -411,6 +414,7 @@ async def generate_server_scaffold_impl(
         "operator_cluster_roles": cluster_roles,
         "rbac_rules": [],
         "verify_permission_resource": None,
+        "auth_type": auth_type,  # "auth0" or "oidc"
     }
 
     # Files to generate
@@ -919,7 +923,8 @@ def register_tools(mcp):
         default_namespace: str = "default",
         operator_cluster_roles: Optional[str] = None,
         include_helm: bool = True,
-        include_test: bool = True
+        include_test: bool = True,
+        auth_type: Literal["auth0", "oidc"] = "auth0"
     ) -> Dict[str, Any]:
         """
         Generate complete MCP server project scaffold.
@@ -929,6 +934,10 @@ def register_tools(mcp):
 
         NOTE: Utility scripts are NOT included. They are available via the mcp-base CLI:
         pip install mcp-base && mcp-base --help
+
+        Args:
+            auth_type: Authentication type - "auth0" for Auth0 with FastMCP OAuth Proxy,
+                       "oidc" for generic OIDC providers like Dex, Keycloak (default: "auth0")
 
         Returns:
             JSON object containing:
@@ -944,7 +953,8 @@ def register_tools(mcp):
             default_namespace=default_namespace,
             operator_cluster_roles=operator_cluster_roles,
             include_helm=include_helm,
-            include_test=include_test
+            include_test=include_test,
+            auth_type=auth_type
         )
 
     @mcp.tool(name="list_artifacts")

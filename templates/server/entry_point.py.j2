@@ -2,7 +2,7 @@
 """
 {{ server_name }} MCP Server - Entry Point
 
-MCP server using FastMCP with OAuth proxy authentication.
+MCP server using FastMCP with {{ auth_type | default('auth0') }} authentication.
 HTTP transport only (Streamable HTTP).
 
 Tool implementations are in {{ server_name_snake }}_tools.py
@@ -25,6 +25,9 @@ from starlette.responses import JSONResponse
 
 # Import tool and resource registration from tools module
 from {{ server_name_snake }}_tools import register_tools, register_resources
+
+# Auth type: {{ auth_type | default('auth0') }}
+AUTH_TYPE = "{{ auth_type | default('auth0') }}"
 
 # Configure logging
 logging.basicConfig(
@@ -84,11 +87,11 @@ async def readiness_check(request):
 # HTTP Transport
 # ============================================================================
 
-def run_http_transport(host: str, port: int):
-    """Run server in HTTP mode with FastMCP OAuth."""
+def run_http_transport_auth0(host: str, port: int):
+    """Run server in HTTP mode with FastMCP Auth0 OAuth Proxy."""
     from auth_fastmcp import create_auth0_oauth_proxy, get_auth_config_summary, load_oidc_config_from_file
 
-    logger.info("Initializing FastMCP OAuth Proxy...")
+    logger.info("Initializing FastMCP Auth0 OAuth Proxy...")
 
     # Load configuration
     config = load_oidc_config_from_file() or {}
@@ -103,7 +106,7 @@ def run_http_transport(host: str, port: int):
     # Log configuration summary
     config_summary = get_auth_config_summary(issuer, audience, client_id, public_url)
     logger.info("=" * 80)
-    logger.info("FastMCP OAuth Configuration:")
+    logger.info("FastMCP Auth0 OAuth Configuration:")
     logger.info("=" * 80)
     for key, value in config_summary.items():
         logger.info(f"  {key}: {value}")
@@ -135,7 +138,7 @@ def run_http_transport(host: str, port: int):
     logger.info("=" * 80)
     logger.info(f"  Listening on: {host}:{port}")
     logger.info(f"  MCP Endpoint: /mcp")
-    logger.info(f"  Auth: FastMCP OAuth Proxy (issues MCP tokens)")
+    logger.info(f"  Auth Type: Auth0 (FastMCP OAuth Proxy)")
     logger.info("  Server: {{ server_name }}")
     logger.info(f"  OAuth Discovery: /.well-known/oauth-authorization-server")
     logger.info(f"  Client Registration: /register")
@@ -161,6 +164,86 @@ def run_http_transport(host: str, port: int):
         log_level="info",
         ws="none"
     )
+
+
+def run_http_transport_oidc(host: str, port: int):
+    """Run server in HTTP mode with generic OIDC authentication (Dex, Keycloak, etc.)."""
+    from auth_oidc import OIDCAuthProvider, OIDCAuthMiddleware
+
+    logger.info("Initializing Generic OIDC Authentication...")
+
+    # Create OIDC auth provider (auto-discovers from issuer)
+    auth_provider = OIDCAuthProvider()
+
+    # Create app WITHOUT built-in auth (we'll add middleware)
+    app = mcp.http_app(transport="http", path="/mcp")
+
+    # Add CORS middleware to handle OPTIONS preflight requests
+    from starlette.middleware.cors import CORSMiddleware
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["*"],  # Allow all origins (customize as needed)
+        allow_credentials=True,
+        allow_methods=["GET", "POST", "OPTIONS"],  # Explicitly allow OPTIONS
+        allow_headers=["*"],
+    )
+
+    # Add OIDC authentication middleware
+    app.add_middleware(
+        OIDCAuthMiddleware,
+        auth_provider=auth_provider,
+        exclude_paths=["/healthz", "/readyz", "/.well-known/", "/register"]
+    )
+
+    # Add OAuth metadata routes
+    for route in auth_provider.get_metadata_routes():
+        app.add_route(route.path, route.endpoint, methods=route.methods)
+
+    # Add health check routes
+    app.add_route("/healthz", liveness_check)
+    app.add_route("/readyz", readiness_check)
+
+    logger.info("")
+    logger.info("=" * 80)
+    logger.info("Server Configuration:")
+    logger.info("=" * 80)
+    logger.info(f"  Listening on: {host}:{port}")
+    logger.info(f"  MCP Endpoint: /mcp")
+    logger.info(f"  Auth Type: Generic OIDC (Dex, Keycloak, etc.)")
+    logger.info(f"  Issuer: {auth_provider.issuer}")
+    logger.info(f"  Audience: {auth_provider.audience}")
+    logger.info("  Server: {{ server_name }}")
+    logger.info(f"  OAuth Discovery: /.well-known/oauth-authorization-server")
+    if auth_provider.upstream_dcr_endpoint:
+        logger.info(f"  Client Registration: /register (proxied)")
+    logger.info("=" * 80)
+    logger.info("")
+    logger.info("To test with bearer token:")
+    logger.info("  ./test/test-mcp.py --transport http \\")
+    logger.info(f"    --url http://{host}:{port}/mcp \\")
+    logger.info("    --token <your-jwt-token>")
+    logger.info("")
+
+    # Add health check filter to uvicorn access logger
+    logging.getLogger("uvicorn.access").addFilter(HealthCheckFilter())
+
+    # Run server
+    uvicorn.run(
+        app,
+        host=host,
+        port=port,
+        log_level="info",
+        ws="none"
+    )
+
+
+def run_http_transport(host: str, port: int):
+    """Run server in HTTP mode with configured authentication."""
+    if AUTH_TYPE == "oidc":
+        run_http_transport_oidc(host, port)
+    else:
+        # Default to Auth0
+        run_http_transport_auth0(host, port)
 
 
 # ============================================================================
