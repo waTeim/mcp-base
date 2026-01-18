@@ -71,7 +71,7 @@ def load_oidc_config_from_file(config_path: Optional[str] = None) -> Optional[Di
 
     # Standard Kubernetes ConfigMap/Secret mount paths
     search_paths.extend([
-        "/etc/mcp/oidc.yaml",
+        "/etc/mcp/oidc/oidc.yaml",
         "/config/oidc.yaml",
         "./oidc.yaml"
     ])
