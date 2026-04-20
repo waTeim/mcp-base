@@ -2,8 +2,8 @@
 # This file lists dependencies for the mcp-base server itself
 # (the server construction assistant)
 
-# FastMCP - MCP server framework
-fastmcp>=2.0.0
+# FastMCP - MCP server framework (3.2.4+ ships the Keycloak provider)
+fastmcp>=3.2.4
 
 # ASGI server for HTTP transport
 uvicorn[standard]>=0.30.0

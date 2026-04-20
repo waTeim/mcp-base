@@ -166,8 +166,86 @@ def run_http_transport_auth0(host: str, port: int):
     )
 
 
+def run_http_transport_keycloak(host: str, port: int):
+    """Run server in HTTP mode with FastMCP's native Keycloak auth provider.
+
+    Uses KeycloakAuthProvider from fastmcp>=3.2.4. Keycloak handles Dynamic
+    Client Registration natively (requires Keycloak >= 26.6.0), so no
+    client_id/client_secret, JWT signing key, or Redis storage is needed.
+    """
+    from auth_fastmcp import create_keycloak_auth_provider, get_auth_config_summary, load_oidc_config_from_file
+
+    logger.info("Initializing FastMCP Keycloak Auth Provider...")
+
+    # Load configuration (used for the logged summary)
+    config = load_oidc_config_from_file() or {}
+    realm_url = (
+        config.get("realm_url")
+        or config.get("issuer")
+        or os.getenv("KEYCLOAK_REALM_URL")
+        or os.getenv("OIDC_ISSUER")
+        or ""
+    )
+    audience = config.get("audience") or os.getenv("OIDC_AUDIENCE")
+    public_url = config.get("public_url") or os.getenv("PUBLIC_URL") or ""
+
+    auth_provider = create_keycloak_auth_provider()
+
+    config_summary = get_auth_config_summary(realm_url.rstrip("/"), audience, public_url)
+    logger.info("=" * 80)
+    logger.info("FastMCP Keycloak Configuration:")
+    logger.info("=" * 80)
+    for key, value in config_summary.items():
+        logger.info(f"  {key}: {value}")
+    logger.info("=" * 80)
+
+    mcp.auth = auth_provider
+
+    app = mcp.http_app(transport="http", path="/mcp")
+
+    from starlette.middleware.cors import CORSMiddleware
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["*"],
+        allow_credentials=True,
+        allow_methods=["GET", "POST", "OPTIONS"],
+        allow_headers=["*"],
+    )
+
+    app.add_route("/healthz", liveness_check)
+    app.add_route("/readyz", readiness_check)
+
+    logger.info("")
+    logger.info("=" * 80)
+    logger.info("Server Configuration:")
+    logger.info("=" * 80)
+    logger.info(f"  Listening on: {host}:{port}")
+    logger.info(f"  MCP Endpoint: /mcp")
+    logger.info(f"  Auth Type: Keycloak (FastMCP KeycloakAuthProvider, DCR)")
+    logger.info("  Server: {{ server_name }}")
+    logger.info(f"  OAuth Discovery: /.well-known/oauth-authorization-server")
+    logger.info(f"  Client Registration: via Keycloak DCR")
+    logger.info("=" * 80)
+    logger.info("")
+    logger.info("To test with bearer token:")
+    logger.info("  ./test/test-mcp.py --transport http \\")
+    logger.info(f"    --url http://{host}:{port}/mcp \\")
+    logger.info("    --token <your-keycloak-jwt>")
+    logger.info("")
+
+    logging.getLogger("uvicorn.access").addFilter(HealthCheckFilter())
+
+    uvicorn.run(
+        app,
+        host=host,
+        port=port,
+        log_level="info",
+        ws="none"
+    )
+
+
 def run_http_transport_oidc(host: str, port: int):
-    """Run server in HTTP mode with generic OIDC authentication (Dex, Keycloak, etc.)."""
+    """Run server in HTTP mode with generic OIDC authentication (Dex, Okta, etc.)."""
     from auth_oidc import OIDCAuthProvider, OIDCAuthMiddleware
 
     logger.info("Initializing Generic OIDC Authentication...")
@@ -239,7 +317,9 @@ def run_http_transport_oidc(host: str, port: int):
 
 def run_http_transport(host: str, port: int):
     """Run server in HTTP mode with configured authentication."""
-    if AUTH_TYPE == "oidc":
+    if AUTH_TYPE == "keycloak":
+        run_http_transport_keycloak(host, port)
+    elif AUTH_TYPE == "oidc":
         run_http_transport_oidc(host, port)
     else:
         # Default to Auth0

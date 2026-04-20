@@ -171,6 +171,11 @@ Generates complete MCP server project:
 - `include_helm`: Include Helm chart (default: true)
 - `include_test`: Include test framework (default: true)
 - `include_bin`: Include utility scripts (default: true)
+- `auth_type`: `"auth0"` (default) | `"keycloak"` | `"oidc"`
+  - `auth0`: FastMCP `Auth0Provider` OAuth proxy; issues MCP tokens; Redis session store
+  - `keycloak`: FastMCP `KeycloakAuthProvider` (fastmcp >= 3.2.4, Keycloak >= 26.6.0);
+    DCR-based, no client_secret / JWT signing key / Redis required
+  - `oidc`: Generic OIDC middleware for other IdPs (Dex, Okta, Azure AD, ...)
 
 ### Artifact Retrieval Tools
 
@@ -246,10 +251,32 @@ async def my_tool(param: str, ctx: Context = None) -> str:
 ```
 
 ### Authentication Flow
-1. FastMCP Auth0Provider handles OAuth
-2. Redis stores session tokens (encrypted with Fernet)
-3. MCPContext extracts user info from JWT
-4. with_mcp_context wraps tool implementations; @mcp.tool passes Context through
+
+Two architecturally distinct DCR patterns, selected by `auth_type`. See
+`patterns/authentication.md` ("DCR model per provider") for the full
+explanation; the short version:
+
+- **Pattern A — Proxy** (`auth_type="auth0"` or `"oidc"`): FastMCP (or our
+  `auth_oidc.py`) runs its own DCR endpoint and proxies to the IdP with a
+  pre-registered `client_id`/`client_secret`. Mints MCP-side JWTs, persists
+  upstream tokens in Redis, signs with a local JWT signing key.
+- **Pattern B — Remote** (`auth_type="keycloak"`): FastMCP publishes RFC
+  9728 Protected Resource metadata pointing at the IdP. The IdP serves DCR
+  directly and tokens are verified against its JWKS. No local client creds,
+  no Redis, no JWT signing key. Requires Keycloak ≥ 26.6.0
+  (keycloak/keycloak#45309).
+
+`MCPContext` and `with_mcp_context` behave identically across all three
+`auth_type` values.
+
+**Per-`auth_type` specifics:**
+
+- `auth0`: FastMCP `Auth0Provider` (OAuth proxy). Redis + JWT signing key
+  required. MCPContext extracts user info from the MCP-issued JWT.
+- `keycloak`: FastMCP `KeycloakAuthProvider`. No client secret, Redis, or
+  JWT signing key. Pins Keycloak ≥ 26.6.0.
+- `oidc`: Our `auth_oidc.py` middleware (Dex, Okta, Azure AD, ...). Same
+  Redis / JWT signing key requirements as `auth0`.
 
 ### Helm Chart Structure
 - Created via `helm create` then modified

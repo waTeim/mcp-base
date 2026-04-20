@@ -280,7 +280,7 @@ async def generate_server_scaffold_impl(
     operator_cluster_roles: Optional[str] = None,
     include_helm: bool = True,
     include_test: bool = True,
-    auth_type: Literal["auth0", "oidc"] = "auth0"
+    auth_type: Literal["auth0", "keycloak", "oidc"] = "auth0"
 ) -> Dict[str, Any]:
     """
     Generate complete MCP server project scaffold.
@@ -368,8 +368,11 @@ async def generate_server_scaffold_impl(
         operator_cluster_roles: Comma-separated ClusterRoles to bind (e.g., "my-operator-edit,other-operator-view")
         include_helm: Include Helm chart (default: True)
         include_test: Include test framework (default: True)
-        auth_type: Authentication type - "auth0" for Auth0 with FastMCP OAuth Proxy,
-                   "oidc" for generic OIDC providers like Dex, Keycloak (default: "auth0")
+        auth_type: Authentication type (default: "auth0"):
+                   - "auth0": FastMCP Auth0Provider OAuth proxy (issues MCP tokens, Redis session storage)
+                   - "keycloak": FastMCP KeycloakAuthProvider (DCR-based, requires Keycloak >= 26.6.0
+                     and fastmcp >= 3.2.4; no client_secret/JWT signing key/Redis required)
+                   - "oidc": Generic OIDC middleware for other IdPs (Dex, Okta, etc.)
 
     Returns:
         JSON object with project metadata, file list, and scaffold_resources dict.
@@ -414,7 +417,7 @@ async def generate_server_scaffold_impl(
         "operator_cluster_roles": cluster_roles,
         "rbac_rules": [],
         "verify_permission_resource": None,
-        "auth_type": auth_type,  # "auth0" or "oidc"
+        "auth_type": auth_type,  # "auth0", "keycloak", or "oidc"
     }
 
     # Files to generate
@@ -924,7 +927,7 @@ def register_tools(mcp):
         operator_cluster_roles: Optional[str] = None,
         include_helm: bool = True,
         include_test: bool = True,
-        auth_type: Literal["auth0", "oidc"] = "auth0"
+        auth_type: Literal["auth0", "keycloak", "oidc"] = "auth0"
     ) -> Dict[str, Any]:
         """
         Generate complete MCP server project scaffold.
@@ -936,8 +939,11 @@ def register_tools(mcp):
         pip install mcp-base && mcp-base --help
 
         Args:
-            auth_type: Authentication type - "auth0" for Auth0 with FastMCP OAuth Proxy,
-                       "oidc" for generic OIDC providers like Dex, Keycloak (default: "auth0")
+            auth_type: Authentication type (default: "auth0"):
+                       - "auth0": FastMCP Auth0Provider OAuth proxy
+                       - "keycloak": FastMCP KeycloakAuthProvider (DCR-based, requires
+                         Keycloak >= 26.6.0 and fastmcp >= 3.2.4)
+                       - "oidc": Generic OIDC middleware for other IdPs (Dex, Okta, etc.)
 
         Returns:
             JSON object containing:
