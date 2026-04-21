@@ -1,16 +1,17 @@
 """
-FastMCP OAuth Proxy Configuration for MCP Base MCP Server
+FastMCP authentication provider factory for MCP Base MCP Server.
 
-This module configures FastMCP's built-in OAuth Proxy for Auth0 integration.
-The proxy handles token issuance properly: it receives Auth0 tokens internally
-and issues its own MCP JWT tokens to clients, solving the JWE token problem.
+Supports two DCR patterns (see docs/cli-integration-contract.md §1):
 
-Key Features:
-- Uses FastMCP's OAuthProxy (built-in, production-ready)
-- Issues MCP-signed JWT tokens (not Auth0's JWE tokens)
-- Encrypts and stores Auth0 tokens securely
-- Handles DCR proxy transparently
-- Validates tokens properly with audience boundaries
+- Pattern A — Proxy: FastMCP `Auth0Provider` (or a generic OIDC proxy). FastMCP
+  runs local DCR, issues MCP-signed JWTs, and persists sessions in Redis.
+- Pattern B — Remote: FastMCP `KeycloakAuthProvider`. Keycloak serves DCR
+  natively (>= 26.6.0) and tokens are verified directly against its JWKS.
+  No client secret, JWT signing key, or Redis required.
+
+Dispatch is driven by the `auth_type` key in the loaded OIDC config
+("auth0" | "oidc" | "keycloak"), with legacy configs (no `auth_type`)
+defaulting to Pattern A / auth0.
 """
 
 import os
@@ -20,6 +21,7 @@ from typing import Optional, Dict, Any
 from pathlib import Path
 
 from fastmcp.server.auth.providers.auth0 import Auth0Provider
+from fastmcp.server.auth.providers.keycloak import KeycloakAuthProvider
 
 # Redis storage backend for OAuth session persistence
 try:
@@ -69,8 +71,11 @@ def load_oidc_config_from_file(config_path: Optional[str] = None) -> Optional[Di
     if config_path:
         search_paths.append(config_path)
 
-    # Standard Kubernetes ConfigMap/Secret mount paths
+    # Standard Kubernetes ConfigMap/Secret mount paths. The chart mounts the
+    # OIDC ConfigMap at /etc/mcp/oidc/ (subdir). Flat /etc/mcp/oidc.yaml is
+    # retained for back-compat with older deployments.
     search_paths.extend([
+        "/etc/mcp/oidc/oidc.yaml",
         "/etc/mcp/oidc.yaml",
         "/config/oidc.yaml",
         "./oidc.yaml"
@@ -492,3 +497,130 @@ def get_auth_config_summary(issuer: str, audience: str, client_id: str, public_u
         "pkce_enabled": True,
         "consent_required": True
     }
+
+
+# ---------------------------------------------------------------------------
+# Pattern B — FastMCP KeycloakAuthProvider
+# ---------------------------------------------------------------------------
+
+def create_keycloak_auth_provider(config_path: Optional[str] = None) -> KeycloakAuthProvider:
+    """
+    Create a FastMCP KeycloakAuthProvider from config file or env vars.
+
+    Keycloak >= 26.6.0 runs DCR natively; FastMCP only verifies JWTs against
+    the realm's JWKS. No client credentials, JWT signing key, or Redis are
+    required at runtime.
+
+    Required config:
+    - realm_url (or issuer): Keycloak realm URL
+    - public_url: Public URL of this MCP server
+
+    Optional config:
+    - audience: Expected JWT audience
+    - required_scopes: Scopes required on incoming tokens (defaults to ["openid"])
+    """
+    logger.info("=" * 70)
+    logger.info("Initializing FastMCP Keycloak Auth Provider for MCP Base")
+    logger.info("=" * 70)
+
+    config = load_oidc_config_from_file(config_path) or {}
+
+    realm_url = (
+        config.get("realm_url")
+        or config.get("issuer")
+        or os.getenv("KEYCLOAK_REALM_URL")
+        or os.getenv("OIDC_ISSUER")
+    )
+    public_url = config.get("public_url") or os.getenv("PUBLIC_URL")
+    audience = config.get("audience") or os.getenv("OIDC_AUDIENCE")
+    required_scopes = config.get("required_scopes")
+
+    if not realm_url:
+        raise ValueError(
+            "Keycloak realm URL is required. Set 'realm_url' (or 'issuer') in config "
+            "or KEYCLOAK_REALM_URL/OIDC_ISSUER environment variable"
+        )
+    if not public_url:
+        raise ValueError(
+            "Public URL is required. Set 'public_url' in config or PUBLIC_URL environment variable"
+        )
+
+    realm_url = str(realm_url).rstrip("/")
+
+    logger.info("Configuring Keycloak Auth Provider:")
+    logger.info(f"  Realm URL: {realm_url}")
+    logger.info(f"  Public URL: {public_url}")
+    logger.info(f"  Audience: {audience or '(not set)'}")
+    logger.info(f"  Required scopes: {required_scopes or '[openid]'}")
+
+    provider_kwargs: Dict[str, Any] = {
+        "realm_url": realm_url,
+        "base_url": public_url,
+    }
+    if audience:
+        provider_kwargs["audience"] = audience
+    if required_scopes:
+        provider_kwargs["required_scopes"] = required_scopes
+
+    auth_provider = KeycloakAuthProvider(**provider_kwargs)
+
+    logger.info("=" * 70)
+    logger.info("FastMCP Keycloak Auth Provider configured successfully")
+    logger.info("  - Tokens verified directly against Keycloak JWKS (no proxy)")
+    logger.info("  - Dynamic Client Registration handled by Keycloak")
+    logger.info("  - No client_id/secret, JWT signing key, or Redis required")
+    logger.info("=" * 70)
+
+    return auth_provider
+
+
+def get_keycloak_auth_config_summary(
+    realm_url: str, audience: Optional[str], public_url: str
+) -> Dict[str, Any]:
+    """Summary of Keycloak provider configuration for logging/debugging."""
+    return {
+        "provider": "Keycloak",
+        "realm_url": realm_url,
+        "authorization_endpoint": f"{realm_url}/protocol/openid-connect/auth",
+        "token_endpoint": f"{realm_url}/protocol/openid-connect/token",
+        "jwks_uri": f"{realm_url}/protocol/openid-connect/certs",
+        "audience": audience,
+        "public_url": public_url,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Top-level dispatcher
+# ---------------------------------------------------------------------------
+
+def create_auth_provider(config_path: Optional[str] = None):
+    """
+    Create the appropriate FastMCP auth provider based on loaded config.
+
+    Dispatches on the `auth_type` field in oidc.yaml. Unknown or missing
+    values default to "auth0" for back-compat with legacy configs.
+
+    Returns a tuple (auth_provider, auth_type_str, config_summary_dict).
+    """
+    config = load_oidc_config_from_file(config_path) or {}
+    auth_type = (config.get("auth_type") or os.getenv("AUTH_TYPE") or "auth0").lower()
+
+    if auth_type == "keycloak":
+        provider = create_keycloak_auth_provider(config_path)
+        realm_url = (config.get("realm_url") or config.get("issuer") or "").rstrip("/")
+        summary = get_keycloak_auth_config_summary(
+            realm_url=realm_url,
+            audience=config.get("audience"),
+            public_url=config.get("public_url") or os.getenv("PUBLIC_URL") or "",
+        )
+        return provider, "keycloak", summary
+
+    # Pattern A — Auth0 (or generic oidc handled the same way here)
+    provider = create_auth0_oauth_proxy(config_path)
+    summary = get_auth_config_summary(
+        issuer=(config.get("issuer") or os.getenv("OIDC_ISSUER") or "").rstrip("/"),
+        audience=config.get("audience") or os.getenv("OIDC_AUDIENCE") or "",
+        client_id=config.get("client_id") or os.getenv("AUTH0_CLIENT_ID") or "",
+        public_url=config.get("public_url") or os.getenv("PUBLIC_URL") or "",
+    )
+    return provider, auth_type, summary

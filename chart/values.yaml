@@ -83,30 +83,46 @@ tolerations: []
 
 affinity: {}
 
-# JWT Signing Key Secret
-# REQUIRED for production deployments (especially multi-replica)
-# Create using: python bin/create-secrets.py --release-name <release-name>
+# JWT Signing Key Secret — Pattern A only.
+# Set jwt.enabled: false for Pattern B (Keycloak native DCR) deployments.
 jwt:
-  # Name of the Kubernetes secret containing the JWT signing key
+  # Whether to mount a JWT signing key / storage encryption key Secret.
+  # Required for Pattern A (auth0, oidc). Must be false for Pattern B (keycloak).
+  enabled: true
+
+  # Name of the Kubernetes secret containing the JWT signing key.
   # Secret should have keys: jwt-signing-key, storage-encryption-key
   # Default: {{ .Release.Name }}-jwt-signing-key
   secretName: ""  # Leave empty to use default
 
 # OIDC/OAuth2 Authentication Configuration
-# REQUIRED for production HTTP mode deployment
+# REQUIRED for production HTTP mode deployment.
+# See docs/cli-integration-contract.md for the full schema and pattern split.
 oidc:
-  # REQUIRED: OIDC Issuer URL (base URL of your identity provider)
+  # REQUIRED: Authentication type. Drives Pattern A vs Pattern B chart branches.
+  #   "auth0"    — FastMCP Auth0Provider (Pattern A: local DCR, Redis, JWT signing key)
+  #   "oidc"     — generic OIDC middleware (Pattern A)
+  #   "keycloak" — FastMCP KeycloakAuthProvider (Pattern B: IdP serves DCR natively;
+  #                requires Keycloak >= 26.6.0)
+  authType: "auth0"
+
+  # REQUIRED: OIDC Issuer URL (base URL of your identity provider).
+  # For Keycloak, this is the realm URL.
   # Examples:
-  #   Auth0: https://your-tenant.auth0.com
+  #   Auth0:    https://your-tenant.auth0.com
   #   Keycloak: https://keycloak.example.com/realms/your-realm
-  #   Okta: https://your-org.okta.com/oauth2/default
+  #   Okta:     https://your-org.okta.com/oauth2/default
   issuer: "https://your-tenant.auth0.com"
 
   # REQUIRED: Expected audience claim in JWT tokens
   audience: "https://your-api.example.com/mcp"
 
-  # REQUIRED: Auth0 application client ID
+  # REQUIRED for Pattern A (auth0, oidc). Ignored for Pattern B (keycloak).
   clientId: ""
+
+  # OPTIONAL (Pattern B): OAuth2 scopes required on incoming tokens.
+  # Defaults to ["openid"] when unset.
+  # requiredScopes: ["openid"]
 
   # OPTIONAL: Public URL of this MCP server (for OAuth callbacks)
   # If not set, auto-generated from ingress.host
@@ -122,11 +138,9 @@ oidc:
   # OPTIONAL: Required OAuth2 scope (default: openid)
   # scope: "openid"
 
-  # NOTE: Auth0 credentials secret is automatically derived from release name
-  # Secret name will be: {{ .Release.Name }}-auth0-credentials
-  #
-  # Create the secret using:
-  #   python bin/create-secrets.py --namespace <namespace> --release-name <release-name>
+  # NOTE (Pattern A only): client credentials secret is automatically derived
+  # from release name. Secret name: {{ .Release.Name }}-oidc-credentials
+  # Create it using: mcp-base create-secrets --namespace <ns> --release-name <release>
 
 # Test Sidecar Configuration
 # Enables a second container for testing using standard OIDC authentication
@@ -144,9 +158,10 @@ testSidecar:
   resources: {}
 
 # Redis Configuration
-# Used for OAuth session persistence across restarts
+# Used for OAuth session persistence across restarts.
+# Required for Pattern A (auth0, oidc). MUST be disabled for Pattern B (keycloak).
 redis:
-  # Enable Redis deployment
+  # Enable Redis subchart deployment
   enabled: true
 
   # Redis architecture (standalone, replication, or cluster)

@@ -4,7 +4,7 @@ kind: ConfigMap
 metadata:
   name: {{ include "{% endraw %}{{ chart_name }}{% raw %}.fullname" . }}-prompts
   labels:
-    {{- "include "{% endraw %}{{ chart_name }}{% raw %}.labels"  . | nindent 4 }}
+    {{- include "{% endraw %}{{ chart_name }}{% raw %}.labels" . | nindent 4 }}
 data:
   prompts.yaml: |
     version: {{ .Values.prompts.version | default "1.0.0" | quote }}

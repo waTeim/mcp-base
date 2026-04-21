@@ -52,14 +52,18 @@ spec:
             - name: oidc-config
               mountPath: /etc/mcp/oidc
               readOnly: true
-            # Mount OIDC client credentials secret
+            {{- if ne .Values.oidc.authType "keycloak" }}
+            # Pattern A — client credentials secret
             - name: oidc-credentials
               mountPath: /etc/mcp/secrets/oidc
               readOnly: true
-            # Mount JWT signing key secret
+            {{- end }}
+            {{- if and (ne .Values.oidc.authType "keycloak") .Values.jwt.enabled }}
+            # Pattern A — JWT signing key + storage encryption key
             - name: jwt-signing-key
               mountPath: /etc/mcp/secrets
               readOnly: true
+            {{- end }}
             {{- if .Values.prompts.enabled }}
             # Mount prompts ConfigMap (hot-reloadable)
             - name: prompts
@@ -111,11 +115,13 @@ spec:
           # Mount OIDC configuration as volume (shared with main container)
           volumeMounts:
             - name: oidc-config
-              mountPath: /etc/mcp
+              mountPath: /etc/mcp/oidc
               readOnly: true
+            {{- if ne .Values.oidc.authType "keycloak" }}
             - name: oidc-credentials
               mountPath: /etc/mcp/secrets/oidc
               readOnly: true
+            {{- end }}
 
           livenessProbe:
             httpGet:
@@ -150,14 +156,17 @@ spec:
             items:
               - key: oidc.yaml
                 path: oidc.yaml
-        # Mount OIDC client credentials secret (derived from release name)
+        {{- if ne .Values.oidc.authType "keycloak" }}
+        # Pattern A — client credentials secret
         - name: oidc-credentials
           secret:
             secretName: {{ .Values.oidc.credentialsSecretName | default (printf "%s-oidc-credentials" .Release.Name) }}
             items:
               - key: {{ .Values.oidc.clientSecretKey | default "server-client-secret" }}
                 path: {{ .Values.oidc.clientSecretKey | default "server-client-secret" }}
-        # Mount JWT signing key and storage encryption key secret
+        {{- end }}
+        {{- if and (ne .Values.oidc.authType "keycloak") .Values.jwt.enabled }}
+        # Pattern A — JWT signing key + storage encryption key
         - name: jwt-signing-key
           secret:
             secretName: {{ .Values.jwt.secretName | default (printf "%s-jwt-signing-key" .Release.Name) }}
@@ -166,6 +175,7 @@ spec:
                 path: jwt-signing-key
               - key: storage-encryption-key
                 path: storage-encryption-key
+        {{- end }}
         {{- if .Values.prompts.enabled }}
         # Mount prompts ConfigMap
         - name: prompts
