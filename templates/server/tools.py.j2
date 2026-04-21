@@ -7,12 +7,13 @@ Tool implementations are separated from registration for testability.
 Pattern:
 1. _impl functions contain the actual logic
 2. register_tools() decorates and registers them with FastMCP
-3. with_mcp_context provides user context from JWT
+3. with_mcp_context wraps implementation functions to provide user context from JWT
 4. Prompts are loaded from prompt_registry (ConfigMap-backed with hot-reload)
 """
 
 from typing import Optional, Literal, Dict, Any
 
+from fastmcp import Context
 from mcp_context import MCPContext, with_mcp_context
 from prompt_registry import get_prompt_registry, reload_prompt_registry
 
@@ -123,6 +124,7 @@ def format_error_message(error: Exception, context: str = "") -> str:
 #         return format_error_message(e, f"listing resources in namespace {namespace or 'all'}")
 
 
+@with_mcp_context
 async def example_tool_impl(ctx: MCPContext, name: str) -> str:
     """
     Example tool implementation.
@@ -138,6 +140,25 @@ async def example_tool_impl(ctx: MCPContext, name: str) -> str:
     """
     user_info = ctx.preferred_username or ctx.user_id or 'anonymous'
     return f"Hello {name}! (User: {user_info})"
+
+
+@with_mcp_context
+async def admin_reload_prompts_impl(ctx: MCPContext) -> str:
+    """
+    Reload prompts from the ConfigMap.
+
+    This tool triggers a hot-reload of prompts without requiring a server restart.
+    Use this after updating the prompts ConfigMap to apply changes immediately.
+
+    Returns:
+        Reload status with updated manifest information
+    """
+    import json
+    user_info = ctx.preferred_username or ctx.user_id or 'anonymous'
+    await ctx.ctx.info(f"User {user_info} requested prompt reload")
+
+    manifest = reload_prompt_registry()
+    return f"Prompts reloaded: {json.dumps(manifest, indent=2)}"
 
 
 # ============================================================================
@@ -273,8 +294,7 @@ def register_tools(mcp):
     """
 
     @mcp.tool(name="example_tool")
-    @with_mcp_context
-    async def example_tool(ctx: MCPContext, name: str) -> str:
+    async def example_tool(name: str, ctx: Context = None) -> str:
         """
         Example tool that greets the user.
 
@@ -286,16 +306,15 @@ def register_tools(mcp):
         Returns:
             Greeting message
         """
-        return await example_tool_impl(ctx, name)
+        return await example_tool_impl(ctx=ctx, name=name)
 
     # Add more tools following this pattern:
     #
     # @mcp.tool(name="list_resources")
-    # @with_mcp_context
     # async def list_resources(
-    #     ctx: MCPContext,
     #     namespace: Optional[str] = None,
-    #     detail_level: Literal["concise", "detailed"] = "concise"
+    #     detail_level: Literal["concise", "detailed"] = "concise",
+    #     ctx: Context = None
     # ) -> str:
     #     """
     #     List all resources in the specified namespace.
@@ -313,15 +332,14 @@ def register_tools(mcp):
     #     Returns:
     #         Formatted list of resources with their current status.
     #     """
-    #     return await list_resources_impl(ctx, namespace, detail_level)
+    #     return await list_resources_impl(ctx=ctx, namespace=namespace, detail_level=detail_level)
 
     # -------------------------------------------------------------------------
     # Admin Tools (for prompt management)
     # -------------------------------------------------------------------------
 
     @mcp.tool(name="admin_reload_prompts")
-    @with_mcp_context
-    async def admin_reload_prompts(ctx: MCPContext) -> str:
+    async def admin_reload_prompts(ctx: Context = None) -> str:
         """
         Reload prompts from the ConfigMap.
 
@@ -331,12 +349,7 @@ def register_tools(mcp):
         Returns:
             Reload status with updated manifest information
         """
-        import json
-        user_info = ctx.preferred_username or ctx.user_id or 'anonymous'
-        await ctx.ctx.info(f"User {user_info} requested prompt reload")
-
-        manifest = reload_prompt_registry()
-        return f"Prompts reloaded: {json.dumps(manifest, indent=2)}"
+        return await admin_reload_prompts_impl(ctx=ctx)
 
     @mcp.tool(name="admin_get_prompt_manifest")
     async def admin_get_prompt_manifest() -> str:

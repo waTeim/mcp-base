@@ -82,7 +82,7 @@ Step 1: Generate scaffold
 
 Step 2: Retrieve and write EVERY file (no exceptions)
    for each file_path in files_list:
-       content = get_artifact(project_id, file_path)
+       content = resources/read(uri=f"scaffold://{project_id}/{file_path}")
        write content to ./file_path (EXACT content, no modifications)
 
 Step 3: Verify file count BEFORE proceeding
@@ -114,7 +114,6 @@ Only after verification passes:
 
 Available tools:
 - generate_server_scaffold: Create complete server project structure
-- get_artifact: Retrieve a specific file from a generated scaffold
 - list_artifacts: List all files in a scaffold project
 - render_template: Render individual templates with parameters
 - list_templates: List available templates
@@ -144,30 +143,22 @@ def run_http_transport(port: int = 4208, host: str = "0.0.0.0"):
     import uvicorn
     from starlette.routing import Route
     from starlette.responses import JSONResponse
-    from auth_fastmcp import create_auth0_oauth_proxy, get_auth_config_summary, load_oidc_config_from_file
+    from auth_fastmcp import create_auth_provider
 
-    logger.info("Initializing FastMCP OAuth Proxy for Auth0...")
+    logger.info("Initializing FastMCP auth provider...")
 
-    # Load configuration
-    config = load_oidc_config_from_file() or {}
-    issuer = config.get("issuer") or os.getenv("OIDC_ISSUER") or ""
-    audience = config.get("audience") or os.getenv("OIDC_AUDIENCE") or ""
-    client_id = config.get("client_id") or os.getenv("AUTH0_CLIENT_ID") or ""
-    public_url = config.get("public_url") or os.getenv("PUBLIC_URL") or ""
+    # Dispatch to the appropriate provider (auth0 / keycloak / oidc) based on
+    # the auth_type key in oidc.yaml. See docs/cli-integration-contract.md §6.
+    auth_proxy, auth_type, config_summary = create_auth_provider()
 
-    # Create OAuth Proxy (handles token issuance)
-    auth_proxy = create_auth0_oauth_proxy()
-
-    # Log configuration summary
-    config_summary = get_auth_config_summary(issuer, audience, client_id, public_url)
     logger.info("=" * 80)
-    logger.info("FastMCP OAuth Configuration:")
+    logger.info(f"FastMCP auth configuration (auth_type={auth_type}):")
     logger.info("=" * 80)
     for key, value in config_summary.items():
         logger.info(f"  {key}: {value}")
     logger.info("=" * 80)
 
-    # Set OAuth on mcp instance
+    # Set auth on mcp instance
     mcp.auth = auth_proxy
 
     async def health_check(request):
@@ -256,10 +247,13 @@ def run_http_transport(port: int = 4208, host: str = "0.0.0.0"):
     logger.info("=" * 80)
     logger.info(f"  Listening on: {host}:{port}")
     logger.info(f"  MCP Endpoint: /mcp")
-    logger.info(f"  Auth: FastMCP OAuth Proxy (issues MCP tokens)")
+    if auth_type == "keycloak":
+        logger.info(f"  Auth: FastMCP KeycloakAuthProvider (Pattern B — IdP-served DCR)")
+    else:
+        logger.info(f"  Auth: FastMCP OAuth Proxy (Pattern A — issues MCP tokens)")
+        logger.info(f"  OAuth Discovery: /.well-known/oauth-authorization-server")
+        logger.info(f"  Client Registration: /register")
     logger.info("  Tools: MCP server construction tools")
-    logger.info(f"  OAuth Discovery: /.well-known/oauth-authorization-server")
-    logger.info(f"  Client Registration: /register")
     logger.info("=" * 80)
     logger.info("")
     logger.info("To get an MCP token:")

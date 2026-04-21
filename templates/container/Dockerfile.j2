@@ -36,6 +36,7 @@ COPY src/mcp_context.py .
 COPY src/user_hash.py .
 COPY src/auth_oidc.py .
 COPY src/auth_fastmcp.py .
+COPY src/prompt_registry.py .
 
 # Create a non-root user for security
 RUN useradd -m -u 1000 mcpuser && \

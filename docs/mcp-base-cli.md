@@ -1,0 +1,364 @@
+# MCP Base
+
+CLI tools for MCP (Model Context Protocol) server setup and management. These tools help you configure OIDC authentication, create Kubernetes secrets, set up RBAC, and manage MCP server deployments.
+
+## Installation
+
+### From PyPI
+
+```bash
+# Install base package (OIDC tools only)
+pip install mcp-base
+
+# Install with Kubernetes support
+pip install mcp-base[kubernetes]
+
+# Install all optional dependencies
+pip install mcp-base[all]
+```
+
+### From Source
+
+```bash
+git clone https://github.com/your-org/mcp-base.git
+cd mcp-base
+pip install -e ".[all]"
+```
+
+## Usage
+
+After installation, the `mcp-base` command is available with the following subcommands:
+
+```bash
+mcp-base <command> [options]
+```
+
+| Command | Description |
+|---------|-------------|
+| `setup-oidc` | Set up OIDC provider (Auth0, Dex, Keycloak, etc.) for MCP authentication |
+| `create-secrets` | Create Kubernetes secrets for MCP deployment |
+| `setup-rbac` | Set up Kubernetes RBAC resources |
+| `add-user` | Add users to allowed clients |
+
+### Setting Up OIDC
+
+Configure your OIDC provider for MCP authentication.
+
+**Supported providers:** `auth0`, `dex`, `keycloak`, `okta`, `generic`
+
+To see all provider options and examples:
+```bash
+mcp-base setup-oidc --help
+```
+
+To get help for a specific provider:
+```bash
+mcp-base setup-oidc --provider dex --help
+```
+
+**1. Auth0 (Automated Setup)**
+
+The CLI automatically configures your Auth0 tenant:
+
+```bash
+# Set up Auth0 (first run)
+mcp-base setup-oidc --provider auth0 \
+    --domain your-tenant.auth0.com \
+    --api-identifier https://mcp-server.example.com/mcp \
+    --token YOUR_MGMT_TOKEN
+
+# Subsequent runs (uses saved configuration)
+mcp-base setup-oidc --provider auth0
+
+# Force recreate clients (if secrets are lost)
+mcp-base setup-oidc --provider auth0 --recreate-client
+```
+
+**2. Dex, Keycloak, Okta, or Generic OIDC (Pre-configured)**
+
+For providers where you already have client credentials configured:
+
+```bash
+# Interactive mode (prompts for values)
+mcp-base setup-oidc --provider dex
+
+# Non-interactive mode
+mcp-base setup-oidc --provider dex \
+    --issuer https://dex.example.com \
+    --audience https://mcp-server.example.com/mcp \
+    --client-id YOUR_CLIENT_ID \
+    --client-secret YOUR_CLIENT_SECRET
+
+# Keycloak
+# Note: scaffolds generated with auth_type="keycloak" use FastMCP's native
+# KeycloakAuthProvider (fastmcp >= 3.2.4, Keycloak >= 26.6.0) with Dynamic
+# Client Registration. In that mode --client-id / --client-secret are not
+# required at runtime, but setup-oidc still writes them into oidc.yaml for
+# any tooling that expects them.
+mcp-base setup-oidc --provider keycloak \
+    --issuer https://keycloak.example.com/realms/myrealm \
+    --audience https://mcp-server.example.com/mcp \
+    --client-id YOUR_CLIENT_ID \
+    --client-secret YOUR_CLIENT_SECRET
+
+# Okta
+mcp-base setup-oidc --provider okta \
+    --issuer https://your-org.okta.com \
+    --audience https://mcp-server.example.com/mcp \
+    --client-id YOUR_CLIENT_ID \
+    --client-secret YOUR_CLIENT_SECRET
+
+# Any generic OIDC provider
+mcp-base setup-oidc --provider generic \
+    --issuer https://your-idp.com \
+    --audience https://mcp-server.example.com/mcp \
+    --client-id YOUR_CLIENT_ID \
+    --client-secret YOUR_CLIENT_SECRET
+```
+
+**Required Redirect URLs**
+
+Configure these redirect URLs in your OIDC provider:
+- **MCP Server**: `https://mcp-server.example.com/auth/callback` (replace with your actual server URL)
+- **Claude Desktop**: `https://claude.ai/api/mcp/auth_callback`
+- **Local testing** (optional): `http://localhost:8888/callback`, `http://localhost:8889/callback`
+
+**Endpoint resolution**
+
+When `setup-oidc` validates the issuer (the default), the `authorization_endpoint`, `token_endpoint`, and `jwks_uri` are read from the provider's `.well-known/openid-configuration` and saved verbatim to `oidc-config.json`. Pass `--skip-validation` to bypass the HTTP probe; in that case the endpoints are derived from provider-specific fallbacks:
+
+| Provider | Auth | Token | JWKS |
+|---|---|---|---|
+| `keycloak` | `{issuer}/protocol/openid-connect/auth` | `{issuer}/protocol/openid-connect/token` | `{issuer}/protocol/openid-connect/certs` |
+| `okta` | `{issuer}/v1/authorize` | `{issuer}/v1/token` | `{issuer}/v1/keys` |
+| `dex`, `generic` | `{issuer}/auth` | `{issuer}/token` | `{issuer}/.well-known/jwks.json` |
+
+### Creating Kubernetes Secrets
+
+Create secrets required for MCP server deployment:
+
+```bash
+# Create secrets in a namespace
+mcp-base create-secrets --namespace default --release-name my-mcp-server
+
+# Dry run to see what would be created
+mcp-base create-secrets --namespace default --release-name my-mcp-server --dry-run
+
+# Replace existing secrets
+mcp-base create-secrets --namespace default --release-name my-mcp-server --force
+```
+
+### Setting Up RBAC
+
+Configure Kubernetes RBAC for MCP server:
+
+```bash
+# Cluster-wide permissions
+mcp-base setup-rbac --namespace production --app-name my-mcp-server
+
+# Namespace-scoped permissions
+mcp-base setup-rbac --namespace production --app-name my-mcp-server --scope namespace
+
+# Dry run
+mcp-base setup-rbac --app-name my-mcp-server --dry-run
+
+# Delete RBAC resources
+mcp-base setup-rbac --app-name my-mcp-server --delete
+```
+
+### Adding Users to Allowed Clients
+
+Add users to the allowedClients array in your OIDC provider:
+
+```bash
+# Interactive mode
+mcp-base add-user
+
+# Non-interactive
+mcp-base add-user --email user@example.com --client-type both
+```
+
+## Dependencies
+
+### Required
+- `requests>=2.28.0` - HTTP client for Auth0 API
+
+### Optional (Kubernetes support)
+- `kubernetes>=28.0.0` - Kubernetes Python client
+- `cryptography>=41.0.0` - For generating encryption keys
+
+Install with: `pip install mcp-base[kubernetes]`
+
+## Development
+
+### Setup
+
+```bash
+# Clone the repository
+git clone https://github.com/your-org/mcp-base.git
+cd mcp-base
+
+# Install in development mode with all dependencies
+pip install -e ".[dev]"
+```
+
+### Running Tests
+
+```bash
+pytest
+```
+
+### Code Quality
+
+```bash
+# Format code
+black src/
+
+# Lint
+ruff check src/
+
+# Type checking
+mypy src/
+```
+
+## Publishing to PyPI
+
+### Prerequisites
+
+1. Create an account on [PyPI](https://pypi.org/) and [Test PyPI](https://test.pypi.org/)
+2. Install build tools:
+   ```bash
+   pip install build twine
+   ```
+3. Create API tokens and save them locally (git-ignored):
+   ```bash
+   echo "pypi-YOUR_TEST_TOKEN" > test.token && chmod 600 test.token
+   echo "pypi-YOUR_PROD_TOKEN" > prod.token && chmod 600 prod.token
+   ```
+
+### Makefile (preferred)
+
+```bash
+make build    # Clean + build only; artifacts in dist/
+make test     # Run pytest
+make dev      # Publish to Test PyPI using ./test.token
+make prod     # Publish to production PyPI using ./prod.token (prompts "yes" to confirm)
+make clean    # Remove dist/, build/, *.egg-info
+```
+
+`make dev` / `make prod` refuse to run if the expected token file is missing or empty.
+
+### Build the Package Manually
+
+```bash
+# Clean previous builds
+rm -rf dist/ build/ *.egg-info src/*.egg-info
+
+# Build source distribution and wheel
+python -m build
+```
+
+This creates:
+- `dist/mcp_base-0.1.0.tar.gz` (source distribution)
+- `dist/mcp_base-0.1.0-py3-none-any.whl` (wheel)
+
+### Test on Test PyPI (Recommended)
+
+```bash
+# Upload to Test PyPI
+python -m twine upload --repository testpypi dist/*
+
+# Or with a token file
+python -m twine upload --repository testpypi dist/* -u __token__ -p "$(cat ~/.testpypi-token)"
+
+# Test installation from Test PyPI
+pip install --index-url https://test.pypi.org/simple/ --extra-index-url https://pypi.org/simple/ mcp-base
+```
+
+### Publish to PyPI
+
+```bash
+# Upload to PyPI
+python -m twine upload dist/*
+```
+
+### Using API Tokens (Recommended)
+
+Instead of username/password, use API tokens:
+
+1. Go to PyPI > Account Settings > API tokens
+2. Create a token with scope "Entire account" or project-specific
+3. Use the token directly:
+   ```bash
+   python -m twine upload dist/* -u __token__ -p pypi-YOUR_TOKEN_HERE
+   ```
+
+#### Using a Token File
+
+For better security, store your token in a file and read it during upload:
+
+```bash
+# Store token in a file (do this once)
+echo "pypi-YOUR_TOKEN_HERE" > ~/.pypi-token
+chmod 600 ~/.pypi-token
+
+# Upload using the token file
+python -m twine upload dist/* -u __token__ -p "$(cat ~/.pypi-token)"
+
+# Or using environment variables
+TWINE_PASSWORD=$(cat ~/.pypi-token) python -m twine upload dist/*
+```
+
+#### Using .pypirc Configuration File
+
+Or create `~/.pypirc`:
+```ini
+[pypi]
+username = __token__
+password = pypi-YOUR_TOKEN_HERE
+
+[testpypi]
+username = __token__
+password = pypi-YOUR_TEST_TOKEN_HERE
+```
+
+### Automated Publishing with GitHub Actions
+
+Create `.github/workflows/publish.yml`:
+
+```yaml
+name: Publish to PyPI
+
+on:
+  release:
+    types: [published]
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install build dependencies
+        run: pip install build twine
+
+      - name: Build package
+        run: python -m build
+
+      - name: Publish to PyPI
+        env:
+          TWINE_USERNAME: __token__
+          TWINE_PASSWORD: ${{ secrets.PYPI_API_TOKEN }}
+        run: python -m twine upload dist/*
+```
+
+Add your PyPI API token as a repository secret named `PYPI_API_TOKEN`.
+
+## License
+
+MIT License - see LICENSE file for details.

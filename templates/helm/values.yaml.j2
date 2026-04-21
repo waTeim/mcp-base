@@ -94,43 +94,61 @@ tolerations: []
 
 affinity: {}
 
-# JWT Signing Key Secret
-# REQUIRED for production deployments (especially multi-replica)
+# JWT Signing Key Secret — Pattern A only.
+# Set jwt.enabled: false for Pattern B (Keycloak native DCR) deployments.
 jwt:
+  # Whether to mount a JWT signing key / storage encryption key Secret.
+  # Required for Pattern A (auth0, oidc). Must be false for Pattern B (keycloak).
+  enabled: true
+
   # Name of the Kubernetes secret containing the JWT signing key
-  # Secret should have key: jwt-signing-key
+  # Secret should have keys: jwt-signing-key, storage-encryption-key
   # Default: {% raw %}{{ .Release.Name }}{% endraw %}-jwt-signing-key
   secretName: ""  # Leave empty to use default
 
 # OIDC/OAuth2 Authentication Configuration
-# REQUIRED for production HTTP mode deployment
+# REQUIRED for production HTTP mode deployment.
+# See mcp-base docs/cli-integration-contract.md for the full schema and pattern split.
 oidc:
-  # REQUIRED: OIDC Issuer URL (base URL of your identity provider)
+  # REQUIRED: Authentication type. Drives Pattern A vs Pattern B chart branches.
+  #   "auth0"    — FastMCP Auth0Provider (Pattern A: local DCR, Redis, JWT signing key)
+  #   "oidc"     — generic OIDC middleware (Pattern A)
+  #   "keycloak" — FastMCP KeycloakAuthProvider (Pattern B; requires Keycloak >= 26.6.0)
+  authType: "oidc"
+
+  # REQUIRED: OIDC Issuer URL (base URL of your identity provider).
+  # For Keycloak, this is the realm URL.
   # Examples:
-  #   Auth0: https://your-tenant.auth0.com
-  #   Keycloak: https://keycloak.example.com/realms/your-realm
-  #   Okta: https://your-org.okta.com/oauth2/default
-  #   Azure AD: https://login.microsoftonline.com/{tenant-id}/v2.0
-  issuer: "https://your-tenant.auth0.com"
+  #   https://keycloak.example.com/realms/your-realm
+  #   https://your-org.okta.com/oauth2/default
+  #   https://login.microsoftonline.com/{tenant-id}/v2.0
+  issuer: "https://your-issuer.example.com"
 
   # REQUIRED: Expected audience claim in JWT tokens
-  # This should match what your IdP issues in the 'aud' claim
   audience: "https://your-api.example.com/mcp"
 
-  # REQUIRED: Auth0 application client ID (pre-registered application)
+  # REQUIRED for Pattern A. Ignored for Pattern B.
   clientId: ""
+
+  # OPTIONAL (Pattern B): OAuth2 scopes required on incoming tokens.
+  # requiredScopes: ["openid"]
+
+  # OPTIONAL: Public URL of this MCP server (for OAuth callbacks)
+  # If not set, auto-generated from ingress.host
+  publicUrl: ""
+
+  # OPTIONAL (Pattern A): credentials secret override
+  # Default: {% raw %}{{ .Release.Name }}{% endraw %}-oidc-credentials
+  credentialsSecretName: ""
+
+  # OPTIONAL (Pattern A): client secret key inside the credentials secret
+  clientSecretKey: ""
 
   # OPTIONAL: Override JWKS URI (auto-discovered from issuer by default)
   # jwksUri: ""
 
   # OPTIONAL: Required OAuth2 scope (default: openid)
   # scope: "openid"
-
-  # NOTE: Auth0 credentials secret is automatically derived from release name
-  # Secret name will be: {% raw %}{{ .Release.Name }}{% endraw %}-auth0-credentials
-  #
-  # Create the secret using:
-  #   python bin/create_secrets.py --namespace <namespace> --release-name <release-name>
 
 {% if operator_cluster_roles %}
 # Operator RBAC Configuration

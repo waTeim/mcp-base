@@ -171,38 +171,13 @@ Generates complete MCP server project:
 - `include_helm`: Include Helm chart (default: true)
 - `include_test`: Include test framework (default: true)
 - `include_bin`: Include utility scripts (default: true)
+- `auth_type`: `"auth0"` (default) | `"keycloak"` | `"oidc"`
+  - `auth0`: FastMCP `Auth0Provider` OAuth proxy; issues MCP tokens; Redis session store
+  - `keycloak`: FastMCP `KeycloakAuthProvider` (fastmcp >= 3.2.4, Keycloak >= 26.6.0);
+    DCR-based, no client_secret / JWT signing key / Redis required
+  - `oidc`: Generic OIDC middleware for other IdPs (Dex, Okta, Azure AD, ...)
 
 ### Artifact Retrieval Tools
-
-#### `get_retrieval_script()`
-**Returns script for efficient large file retrieval - prevents context bloat**
-
-Returns a JSON object containing:
-- `script`: Complete Python script for artifact retrieval
-- `filename`: Suggested filename ("retrieve-artifacts.py")
-- `usage`: Detailed usage instructions for AI agents
-- `example`: Example workflow showing integration
-
-**Use this for files >1000 lines** to avoid loading large files into context window.
-
-**Workflow:**
-1. Call `get_retrieval_script()` to get the script
-2. Write script to disk: `retrieve-artifacts.py`
-3. Ask Claude Code to execute: "Run retrieve-artifacts.py to fetch FILES from PROJECT_ID"
-4. Files are written directly to disk without consuming context
-
-**Context savings:** ~97% reduction (28,000 tokens → 500 tokens for large files)
-
-#### `get_artifact(project_id, file_path)`
-**Retrieve individual generated files - loads content into context**
-
-Parameters:
-- `project_id`: Project ID from scaffold generation
-- `file_path`: Relative path to file (e.g., "src/my_server.py")
-
-Returns file content as string.
-
-**Use this for small files <500 lines** that you need to read or discuss.
 
 #### `list_artifacts(project_id)`
 **List all files in a generated project**
@@ -210,7 +185,8 @@ Returns file content as string.
 Parameters:
 - `project_id`: Project ID from scaffold generation
 
-Returns JSON list of all files with metadata (path, size, type).
+Returns JSON list of all files with metadata (path, size, type). Use
+`resources/read` with `scaffold://{project_id}/{path}` to fetch file content.
 
 ## Template Variables
 
@@ -243,23 +219,11 @@ scaffold = await mcp.call_tool("generate_server_scaffold", {
 })
 project_id = scaffold["project_id"]
 
-# 4. Get retrieval script for large files (>1000 lines)
-script_result = await mcp.call_tool("get_retrieval_script")
-script_data = json.loads(script_result)
+# 4. List artifacts (paths only)
+artifacts = await mcp.call_tool("list_artifacts", {"project_id": project_id})
 
-# Write script to disk
-Write("retrieve-artifacts.py", script_data["script"])
-
-# Ask Claude Code to execute for large files
-"Run: python retrieve-artifacts.py {project_id} bin/setup-auth0.py bin/setup-rbac.py"
-# Files written directly to disk, no context bloat!
-
-# 5. Use get_artifact for small files (<500 lines) you need to read
-small_file = await mcp.call_tool("get_artifact", {
-    "project_id": project_id,
-    "file_path": "src/my_server.py"
-})
-# Content loaded into context for discussion/modification
+# 5. Read a small file via resources/read (content loads into context)
+small_file = await mcp.read_resource(f"scaffold://{project_id}/src/my_server.py")
 
 # 6. Or render individual template
 template = await mcp.call_tool("render_template", {
@@ -272,22 +236,47 @@ template = await mcp.call_tool("render_template", {
 
 ### Tool Implementation
 ```python
-@mcp.tool(name="my_tool")
 @with_mcp_context
-async def my_tool(ctx: MCPContext, param: str) -> str:
+async def my_tool_impl(ctx: MCPContext, param: str) -> str:
     """Tool description for LLM consumption."""
     user = ctx.preferred_username or ctx.user_id
     await ctx.info(f"User {user} calling my_tool")
 
     result = await asyncio.to_thread(k8s_api.method, ...)
     return truncate_response(format_result(result))
+
+@mcp.tool(name="my_tool")
+async def my_tool(param: str, ctx: Context = None) -> str:
+    return await my_tool_impl(ctx=ctx, param=param)
 ```
 
 ### Authentication Flow
-1. FastMCP Auth0Provider handles OAuth
-2. Redis stores session tokens (encrypted with Fernet)
-3. MCPContext extracts user info from JWT
-4. with_mcp_context decorator wraps tools
+
+Two architecturally distinct DCR patterns, selected by `auth_type`. See
+`patterns/authentication.md` ("DCR model per provider") for the full
+explanation; the short version:
+
+- **Pattern A — Proxy** (`auth_type="auth0"` or `"oidc"`): FastMCP (or our
+  `auth_oidc.py`) runs its own DCR endpoint and proxies to the IdP with a
+  pre-registered `client_id`/`client_secret`. Mints MCP-side JWTs, persists
+  upstream tokens in Redis, signs with a local JWT signing key.
+- **Pattern B — Remote** (`auth_type="keycloak"`): FastMCP publishes RFC
+  9728 Protected Resource metadata pointing at the IdP. The IdP serves DCR
+  directly and tokens are verified against its JWKS. No local client creds,
+  no Redis, no JWT signing key. Requires Keycloak ≥ 26.6.0
+  (keycloak/keycloak#45309).
+
+`MCPContext` and `with_mcp_context` behave identically across all three
+`auth_type` values.
+
+**Per-`auth_type` specifics:**
+
+- `auth0`: FastMCP `Auth0Provider` (OAuth proxy). Redis + JWT signing key
+  required. MCPContext extracts user info from the MCP-issued JWT.
+- `keycloak`: FastMCP `KeycloakAuthProvider`. No client secret, Redis, or
+  JWT signing key. Pins Keycloak ≥ 26.6.0.
+- `oidc`: Our `auth_oidc.py` middleware (Dex, Okta, Azure AD, ...). Same
+  Redis / JWT signing key requirements as `auth0`.
 
 ### Helm Chart Structure
 - Created via `helm create` then modified

@@ -46,16 +46,20 @@ spec:
           volumeMounts:
             # Always mount ConfigMap for OIDC config
             - name: oidc-config
-              mountPath: /etc/mcp
+              mountPath: /etc/mcp/oidc
               readOnly: true
-            # Mount Auth0 credentials secret
-            - name: auth0-credentials
-              mountPath: /etc/mcp/secrets/auth0
+            {{- if ne .Values.oidc.authType "keycloak" }}
+            # Pattern A — client credentials secret
+            - name: oidc-credentials
+              mountPath: /etc/mcp/secrets/oidc
               readOnly: true
-            # Mount JWT signing key secret
+            {{- end }}
+            {{- if and (ne .Values.oidc.authType "keycloak") .Values.jwt.enabled }}
+            # Pattern A — JWT signing key + storage encryption key
             - name: jwt-signing-key
               mountPath: /etc/mcp/secrets
               readOnly: true
+            {{- end }}
 
           livenessProbe:
             httpGet:
@@ -101,11 +105,13 @@ spec:
           # Mount OIDC configuration as volume (shared with main container)
           volumeMounts:
             - name: oidc-config
-              mountPath: /etc/mcp
+              mountPath: /etc/mcp/oidc
               readOnly: true
-            - name: auth0-credentials
-              mountPath: /etc/mcp/secrets/auth0
+            {{- if ne .Values.oidc.authType "keycloak" }}
+            - name: oidc-credentials
+              mountPath: /etc/mcp/secrets/oidc
               readOnly: true
+            {{- end }}
 
           livenessProbe:
             httpGet:
@@ -140,14 +146,17 @@ spec:
             items:
               - key: oidc.yaml
                 path: oidc.yaml
-        # Mount Auth0 credentials secret (derived from release name)
-        - name: auth0-credentials
+        {{- if ne .Values.oidc.authType "keycloak" }}
+        # Pattern A — client credentials secret
+        - name: oidc-credentials
           secret:
-            secretName: {{ .Release.Name }}-auth0-credentials
+            secretName: {{ .Release.Name }}-oidc-credentials
             items:
               - key: server-client-secret
                 path: server-client-secret
-        # Mount JWT signing key and storage encryption key secret
+        {{- end }}
+        {{- if and (ne .Values.oidc.authType "keycloak") .Values.jwt.enabled }}
+        # Pattern A — JWT signing key + storage encryption key
         - name: jwt-signing-key
           secret:
             secretName: {{ .Values.jwt.secretName | default (printf "%s-jwt-signing-key" .Release.Name) }}
@@ -156,6 +165,7 @@ spec:
                 path: jwt-signing-key
               - key: storage-encryption-key
                 path: storage-encryption-key
+        {{- end }}
 
       {{- with .Values.nodeSelector }}
       nodeSelector:

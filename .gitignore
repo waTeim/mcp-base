@@ -24,6 +24,11 @@ chart/charts/*
 make.env
 auth0-config.json
 auth0-values.yaml
+oidc-values.yaml
+oidc-config.json
+mcp-base.yaml
+.claude/
+.codex
 
 # Python packaging
 ######################

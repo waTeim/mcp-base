@@ -18,9 +18,8 @@ from mcp_context import MCPContext, with_mcp_context
 
 mcp = FastMCP("server-name")
 
-@mcp.tool(name="my_tool")
 @with_mcp_context
-async def my_tool(
+async def my_tool_impl(
     ctx: MCPContext,
     required_param: str,
     optional_param: str = None,
@@ -53,9 +52,24 @@ async def my_tool(
     await ctx.info(f"User {user} calling my_tool with {required_param}")
 
     try:
-        # Implementation
-        result = await do_something(required_param, optional_param)
-        return format_response(result, detail_level)
+    # Implementation
+    result = await do_something(required_param, optional_param)
+    return format_response(result, detail_level)
+
+@mcp.tool(name="my_tool")
+async def my_tool(
+    required_param: str,
+    optional_param: str = None,
+    detail_level: Literal["concise", "detailed"] = "concise",
+    ctx: Context = None
+) -> str:
+    """Thin tool wrapper that passes FastMCP Context through."""
+    return await my_tool_impl(
+        ctx=ctx,
+        required_param=required_param,
+        optional_param=optional_param,
+        detail_level=detail_level
+    )
     except Exception as e:
         return format_error_message(e, "calling my_tool")
 ```
@@ -94,7 +108,9 @@ class MCPContext:
 
 ## with_mcp_context Decorator Pattern
 
-This decorator intercepts FastMCP's Context injection and wraps it:
+This decorator intercepts FastMCP's Context injection and wraps it. Use it on
+implementation functions, then have the `@mcp.tool` wrapper pass the FastMCP
+`Context` through as a named argument (`ctx` or `context`).
 
 ```python
 def with_mcp_context(func):

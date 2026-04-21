@@ -279,14 +279,15 @@ async def generate_server_scaffold_impl(
     default_namespace: str = "default",
     operator_cluster_roles: Optional[str] = None,
     include_helm: bool = True,
-    include_test: bool = True
+    include_test: bool = True,
+    auth_type: Literal["auth0", "keycloak", "oidc"] = "auth0"
 ) -> Dict[str, Any]:
     """
     Generate complete MCP server project scaffold.
 
     Creates a full project structure with all necessary files for
     a production-ready Kubernetes MCP server. Files are stored as artifacts
-    and can be retrieved individually using get_artifact.
+    and can be retrieved individually via resources/read with scaffold:// URIs.
 
     ========================================================================
     CRITICAL: PHASE 2 IS IMPOSSIBLE UNTIL PHASE 1 IS VERIFIED COMPLETE
@@ -308,9 +309,9 @@ async def generate_server_scaffold_impl(
     This is MECHANICAL work. Think: copy machine, not architect.
 
     REQUIRED STEPS (no exceptions):
-    1. Call this function - note file_count in response
-    2. Loop through EVERY file in the returned "files" list
-    3. For EACH file: content = get_artifact(project_id, path)
+    1. Call this function - note file_count and scaffold_resources in response
+    2. Loop through EVERY file in the returned scaffold_resources dict
+    3. For EACH file: content = read_resource(scaffold://{project_id}/{path})
     4. For EACH file: write EXACT content to ./path (current directory)
     5. VERIFY: count files on disk == file_count from response
 
@@ -354,7 +355,7 @@ async def generate_server_scaffold_impl(
     1. NON-DEVIATION RULE: Use MCPBase scaffold artifacts as the ONLY source of project files.
        DO NOT create alternate scaffolds or replacement files under any circumstances.
     2. ERROR HANDLING: On any tool or schema error, STOP immediately, report the full error,
-       and propose tool-based recovery (e.g., list_artifacts + get_artifact).
+       and propose recovery using resources/read with scaffold:// URIs.
        DO NOT attempt to work around errors by creating alternate scaffolds.
     3. PARAMETER DEFAULTS: Use default parameter values unless the user explicitly specifies otherwise.
        Do not override include_helm or include_test unless explicitly requested.
@@ -367,10 +368,15 @@ async def generate_server_scaffold_impl(
         operator_cluster_roles: Comma-separated ClusterRoles to bind (e.g., "my-operator-edit,other-operator-view")
         include_helm: Include Helm chart (default: True)
         include_test: Include test framework (default: True)
+        auth_type: Authentication type (default: "auth0"):
+                   - "auth0": FastMCP Auth0Provider OAuth proxy (issues MCP tokens, Redis session storage)
+                   - "keycloak": FastMCP KeycloakAuthProvider (DCR-based, requires Keycloak >= 26.6.0
+                     and fastmcp >= 3.2.4; no client_secret/JWT signing key/Redis required)
+                   - "oidc": Generic OIDC middleware for other IdPs (Dex, Okta, etc.)
 
     Returns:
-        JSON object with project metadata, file list, and resource links.
-        Use get_artifact(project_id, path) to retrieve individual files.
+        JSON object with project metadata, file list, and scaffold_resources dict.
+        Use resources/read with scaffold://{project_id}/{path} URIs to retrieve individual files.
 
         Structure:
         {
@@ -378,7 +384,7 @@ async def generate_server_scaffold_impl(
             "server_name": "Server Name",
             "file_count": 37,
             "files": ["Dockerfile", "src/...", ...],
-            "resource_links": [{"uri": "artifact://...", "path": "...", ...}],
+            "resource_links": [{"uri": "scaffold://...", "path": "...", ...}],
             "quick_start": ["..."],
             "warnings": [],
             "truncated": false
@@ -411,6 +417,7 @@ async def generate_server_scaffold_impl(
         "operator_cluster_roles": cluster_roles,
         "rbac_rules": [],
         "verify_permission_resource": None,
+        "auth_type": auth_type,  # "auth0", "keycloak", or "oidc"
     }
 
     # Files to generate
@@ -480,6 +487,7 @@ async def generate_server_scaffold_impl(
             ("helm/templates/rolebinding.yaml.j2", "chart/templates/rolebinding.yaml"),
             ("helm/templates/ingress.yaml.j2", "chart/templates/ingress.yaml"),
             ("helm/templates/hpa.yaml.j2", "chart/templates/hpa.yaml"),
+            ("helm/templates/NOTES.txt.j2", "chart/templates/NOTES.txt"),
         ]
 
         for template_path, output_path in helm_templates:
@@ -490,24 +498,9 @@ async def generate_server_scaffold_impl(
                 files[output_path] = f"# Error rendering: {e}"
 
         files["chart/.helmignore"] = """# Patterns to ignore when building packages.
-*.tgz
 .git/
 .gitignore
 .DS_Store
-"""
-
-        files["chart/templates/NOTES.txt"] = f"""{{{{- $fullName := include "{chart_name}.fullname" . -}}}}
-1. Get the application URL by running these commands:
-{{{{- if .Values.ingress.enabled }}}}
-  http{{{{- if .Values.ingress.tls.enabled }}}}s{{{{- end }}}}://{{{{ .Values.ingress.host }}}}
-{{{{- else if contains "NodePort" .Values.service.type }}}}
-  export NODE_PORT=$(kubectl get --namespace {{{{ .Release.Namespace }}}} -o jsonpath="{{{{.spec.ports[0].nodePort}}}}" services {{{{ $fullName }}}})
-  export NODE_IP=$(kubectl get nodes --namespace {{{{ .Release.Namespace }}}} -o jsonpath="{{{{.items[0].status.addresses[0].address}}}}")
-  echo http://$NODE_IP:$NODE_PORT
-{{{{- else if contains "ClusterIP" .Values.service.type }}}}
-  kubectl --namespace {{{{ .Release.Namespace }}}} port-forward svc/{{{{ $fullName }}}} {port}:{port}
-  echo "Visit http://127.0.0.1:{port}/mcp"
-{{{{- end }}}}
 """
 
     # Test framework
@@ -605,11 +598,17 @@ class TestExampleTool(TestPlugin):
         mime_type = get_mime_type_for_path(path)
         filename = path.split("/")[-1]
         resource_links.append({
-            "uri": f"artifact://{project_id}/{path}",
+            "uri": f"scaffold://{project_id}/{path}",
             "path": path,
             "name": filename,
             "mimeType": mime_type
         })
+
+    # Build scaffold resource URIs for each file
+    scaffold_resources = {
+        path: f"scaffold://{project_id}/{path}"
+        for path in sorted(files.keys())
+    }
 
     # Always return a consistent JSON object structure
     result = {
@@ -619,26 +618,54 @@ class TestExampleTool(TestPlugin):
         "server_name_kebab": server_name_kebab,
         "file_count": len(files),
         "files": sorted(files.keys()),
+        "scaffold_resources": scaffold_resources,
         "resource_links": resource_links,
         "quick_start": [
-            "======== PHASE 2 IS IMPOSSIBLE UNTIL PHASE 1 IS VERIFIED ========",
-            "This is not advice. It is a logical dependency.",
-            "You cannot customize files that don't exist. ARTIFACTS EXPIRE.",
+            "========================================================================",
+            "PHASE 1: CREATE SCAFFOLD_INVENTORY.md (REQUIRED DELIVERABLE)",
+            "========================================================================",
             "",
-            "======== PHASE 1: RETRIEVE ALL FILES NOW ========",
-            f"STEP 1: Loop through ALL {len(files)} files in 'files' list",
-            f"STEP 2: For EACH: content = get_artifact('{project_id}', path)",
-            "STEP 3: For EACH: write EXACT content to ./path",
-            f"STEP 4: VERIFY: count files on disk == {len(files)}",
+            "Your ONLY goal in Phase 1 is to produce SCAFFOLD_INVENTORY.md",
+            "This document IS your deliverable. Quality determines success.",
             "",
-            "Do not pause. Do not skip. Complete NOW or artifacts expire.",
+            "REQUIRED STEPS (no exceptions, no shortcuts):",
+            f"1. For EACH of the {len(files)} files, use resources/read with the scaffold:// URI",
+            f"   Example: resources/read(uri='scaffold://{project_id}/src/{server_name_snake}_server.py')",
+            "2. Write each file to disk EXACTLY as retrieved",
+            "3. Make bin scripts executable: chmod +x bin/*",
+            "4. Create SCAFFOLD_INVENTORY.md with details for EACH file:",
+            "   - Filename and path",
+            "   - Line count (exact)",
+            "   - Size in bytes",
+            "   - First 5 function/class/constant names (if code file)",
             "",
-            "======== PHASE 2: CUSTOMIZATION (IMPOSSIBLE UNTIL VERIFIED) ========",
-            f"Only after {len(files)} files verified on disk:",
+            "SCAFFOLD RESOURCE URIs (use with resources/read):",
+            f"   All files available at: scaffold://{project_id}/{{path}}",
+            "   See 'scaffold_resources' field for complete URI list",
+            "",
+            "VERIFICATION HEADER (must be at top of SCAFFOLD_INVENTORY.md):",
+            f"  [ ] File count: Retrieved ___ of {len(files)} expected files",
+            "  [ ] All files written to disk with exact content",
+            "  [ ] All files have inventory entries below",
+            "  [ ] No placeholders created",
+            "  [ ] No files skipped",
+            "",
+            "CRITICAL: You cannot fake line counts or function names.",
+            "Phase 2 customization quality is DIRECTLY PROPORTIONAL to",
+            "Phase 1 inventory completeness. Incomplete inventory = broken code.",
+            "",
+            "========================================================================",
+            "PHASE 2: CUSTOMIZE USING INVENTORY (ONLY AFTER PHASE 1 COMPLETE)",
+            "========================================================================",
+            "",
+            "Given SCAFFOLD_INVENTORY.md showing all scaffold components:",
             f"  - Customize src/{server_name_snake}_tools.py",
             f"  - Test: python src/{server_name_snake}_server.py --port {port}",
             "  - Configure: python bin/configure-make.py  # Then: mcp-base setup-oidc",
-            "  - Deploy: make build && make push && make helm-install"
+            "  - Deploy: make build && make push && make helm-install",
+            "",
+            "Refer to the inventory to understand what exists before modifying.",
+            "Your customizations WILL FAIL if Phase 1 inventory was incomplete."
         ],
         "warnings": [],
         "truncated": False
@@ -646,7 +673,7 @@ class TestExampleTool(TestPlugin):
 
     # Add a summary field for backward compatibility if requested
     if output_description == "summary":
-        result["summary"] = f"Generated {len(files)} files for {server_name}. Use get_artifact(project_id, path) to retrieve files."
+        result["summary"] = f"Generated {len(files)} files for {server_name}. Use resources/read with scaffold://{project_id}/{{path}} URIs to retrieve files."
 
     return result
 
@@ -804,12 +831,40 @@ def register_resources(mcp):
             project_id: The project identifier (e.g., "my-server-abc12345")
 
         Returns:
-            JSON list of artifact paths and URIs
+            JSON list of artifact paths and scaffold:// URIs
         """
         artifacts = artifact_store.list_project(project_id)
         if not artifacts:
             return f"Error: No artifacts found for project: {project_id}"
-        return json.dumps([{"path": path, "uri": uri} for path, uri in artifacts], indent=2)
+        return json.dumps(
+            [{"path": path, "uri": f"scaffold://{project_id}/{path}"} for path, _ in artifacts],
+            indent=2
+        )
+
+    # Dynamic artifact resource - read individual scaffold files
+    @mcp.resource("scaffold://{project_id}/{path*}")
+    def read_scaffold_file(project_id: str, path: str) -> str:
+        """
+        Read a scaffold file from a generated project.
+
+        Use resources/read with scaffold://{project_id}/{path} URI to retrieve
+        individual files from a generated scaffold.
+
+        Args:
+            project_id: The project identifier (e.g., "my-server-abc12345")
+            path: File path within the project (e.g., "src/my_server.py")
+
+        Returns:
+            File content as text
+        """
+        artifact = artifact_store.get(project_id, path)
+        if artifact is None:
+            available = artifact_store.list_project(project_id)
+            if not available:
+                return f"Error: Project '{project_id}' not found. It may have expired."
+            available_paths = [p for p, _ in available]
+            return f"Error: File '{path}' not found in project '{project_id}'.\nAvailable files:\n" + "\n".join(f"  - {p}" for p in available_paths[:10])
+        return artifact.content
 
 
 # ============================================================================
@@ -871,20 +926,29 @@ def register_tools(mcp):
         default_namespace: str = "default",
         operator_cluster_roles: Optional[str] = None,
         include_helm: bool = True,
-        include_test: bool = True
+        include_test: bool = True,
+        auth_type: Literal["auth0", "keycloak", "oidc"] = "auth0"
     ) -> Dict[str, Any]:
         """
         Generate complete MCP server project scaffold.
 
-        Returns a JSON object with project metadata and file references.
-        Use get_artifact(project_id, path) to retrieve individual files.
+        Returns a JSON object with project metadata and scaffold_resources dict.
+        Use resources/read with scaffold://{project_id}/{path} URIs to retrieve individual files.
 
         NOTE: Utility scripts are NOT included. They are available via the mcp-base CLI:
         pip install mcp-base && mcp-base --help
 
+        Args:
+            auth_type: Authentication type (default: "auth0"):
+                       - "auth0": FastMCP Auth0Provider OAuth proxy
+                       - "keycloak": FastMCP KeycloakAuthProvider (DCR-based, requires
+                         Keycloak >= 26.6.0 and fastmcp >= 3.2.4)
+                       - "oidc": Generic OIDC middleware for other IdPs (Dex, Okta, etc.)
+
         Returns:
             JSON object containing:
-            - project_id: Unique identifier for retrieving artifacts
+            - project_id: Unique identifier for artifacts
+            - scaffold_resources: Dict mapping file paths to scaffold:// URIs
             - files: List of all generated file paths
             - quick_start: Steps to get started
         """
@@ -895,40 +959,9 @@ def register_tools(mcp):
             default_namespace=default_namespace,
             operator_cluster_roles=operator_cluster_roles,
             include_helm=include_helm,
-            include_test=include_test
+            include_test=include_test,
+            auth_type=auth_type
         )
-
-    @mcp.tool(name="get_artifact")
-    async def get_artifact(project_id: str, path: str) -> str:
-        """
-        Retrieve a generated artifact file by project ID and path.
-
-        After calling generate_server_scaffold, use this tool to retrieve
-        individual generated files. This allows fetching one file at a time
-        instead of all files at once, reducing context usage.
-
-        CRITICAL: If this tool returns an error, DO NOT create replacement files.
-        Instead, use list_artifacts to see available files, or report the error
-        and ask the user for guidance.
-
-        Args:
-            project_id: The project identifier returned by generate_server_scaffold
-                        (e.g., "my-server-abc12345")
-            path: The file path within the project (e.g., "src/my_server.py",
-                  "Makefile", "chart/values.yaml")
-
-        Returns:
-            File content as text, or error message if not found
-        """
-        artifact = artifact_store.get(project_id, path)
-        if artifact is None:
-            # List available files to help the user
-            available = artifact_store.list_project(project_id)
-            if not available:
-                return f"Error: Project '{project_id}' not found. No artifacts stored."
-            paths = [p for p, _ in available]
-            return f"Error: Artifact '{path}' not found in project '{project_id}'.\n\nAvailable files:\n" + "\n".join(f"  - {p}" for p in paths[:20])
-        return artifact.content
 
     @mcp.tool(name="list_artifacts")
     async def list_artifacts(project_id: str) -> str:
@@ -936,7 +969,7 @@ def register_tools(mcp):
         List all generated artifacts in a project.
 
         Use this after generate_server_scaffold to see all available files,
-        then use get_artifact to retrieve specific files.
+        then use resources/read with scaffold:// URIs to retrieve specific files.
 
         CRITICAL: This is the authoritative source for project files. Always use
         the official artifact list - DO NOT create alternate file lists or replacement
@@ -959,4 +992,3 @@ def register_tools(mcp):
             "file_count": len(artifacts),
             "files": [path for path, _ in artifacts]
         }, indent=2)
-

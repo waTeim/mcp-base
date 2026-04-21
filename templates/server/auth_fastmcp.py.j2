@@ -1,3 +1,162 @@
+{%- if auth_type == 'keycloak' -%}
+"""
+FastMCP Keycloak Auth Provider configuration for {{ server_name }} MCP Server.
+
+Uses FastMCP's built-in KeycloakAuthProvider (fastmcp>=3.2.4), which is
+Pattern B (Remote) in the mcp-base architecture:
+
+- Keycloak runs Dynamic Client Registration natively (requires >= 26.6.0
+  for MCP-compatible DCR; see keycloak/keycloak#45309).
+- FastMCP does NOT proxy DCR. It only publishes RFC 9728 Protected Resource
+  metadata pointing MCP clients at Keycloak's own authorization server.
+- Tokens are verified directly against the realm's JWKS endpoint.
+- No client_id/client_secret, JWT signing key, or Redis required.
+
+See mcp-base patterns/authentication.md ("DCR model per provider") for the
+Pattern A vs Pattern B explanation.
+"""
+
+import os
+import logging
+from typing import Optional, Dict, Any
+from pathlib import Path
+
+from fastmcp.server.auth.providers.keycloak import KeycloakAuthProvider
+
+# Configure logging
+logger = logging.getLogger(__name__)
+
+if os.getenv("DEBUG", "").lower() in ("true", "1", "yes"):
+    logger.setLevel(logging.DEBUG)
+    logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+    logger.debug("DEBUG logging enabled for auth_fastmcp module")
+else:
+    if not logger.handlers:
+        logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+
+
+def load_oidc_config_from_file(config_path: Optional[str] = None) -> Optional[Dict[str, Any]]:
+    """Load OIDC configuration from a YAML file.
+
+    Searches in order:
+    1. Provided config_path
+    2. /etc/mcp/oidc/oidc.yaml (default Kubernetes ConfigMap mount)
+    3. /config/oidc.yaml
+    4. ./oidc.yaml
+    """
+    search_paths = []
+    if config_path:
+        search_paths.append(config_path)
+    search_paths.extend([
+        "/etc/mcp/oidc/oidc.yaml",
+        "/config/oidc.yaml",
+        "./oidc.yaml",
+    ])
+
+    for path_str in search_paths:
+        path = Path(path_str)
+        if path.exists() and path.is_file():
+            try:
+                import yaml
+                with open(path, 'r') as f:
+                    config = yaml.safe_load(f) or {}
+                logger.info(f"Loaded OIDC config from: {path}")
+                return config
+            except ImportError:
+                logger.error("PyYAML not installed. Install with: pip install pyyaml")
+                raise
+            except Exception as e:
+                logger.warning(f"Failed to load config from {path}: {e}")
+                continue
+
+    logger.warning("No OIDC config file found; falling back to environment variables")
+    return None
+
+
+def create_keycloak_auth_provider(config_path: Optional[str] = None) -> KeycloakAuthProvider:
+    """Create and configure a FastMCP KeycloakAuthProvider.
+
+    Configuration (priority order):
+    1. Config file (YAML) at /etc/mcp/oidc/oidc.yaml or config_path
+    2. Environment variables
+    3. Defaults
+
+    Required configuration:
+    - realm_url (or issuer): Keycloak realm URL
+      (e.g., https://keycloak.example.com/realms/myrealm)
+    - public_url: Public URL of this MCP server
+
+    Optional configuration:
+    - audience: Expected JWT audience (recommended for production)
+    - required_scopes: Scopes required on incoming tokens (defaults to ["openid"])
+    """
+    logger.info("=" * 70)
+    logger.info("Initializing FastMCP Keycloak Auth Provider for {{ server_name }}")
+    logger.info("=" * 70)
+
+    config = load_oidc_config_from_file(config_path) or {}
+
+    realm_url = (
+        config.get("realm_url")
+        or config.get("issuer")
+        or os.getenv("KEYCLOAK_REALM_URL")
+        or os.getenv("OIDC_ISSUER")
+    )
+    public_url = config.get("public_url") or os.getenv("PUBLIC_URL")
+    audience = config.get("audience") or os.getenv("OIDC_AUDIENCE")
+    required_scopes = config.get("required_scopes")
+
+    if not realm_url:
+        raise ValueError(
+            "Keycloak realm URL is required. Set 'realm_url' (or 'issuer') in config "
+            "or KEYCLOAK_REALM_URL/OIDC_ISSUER environment variable"
+        )
+    if not public_url:
+        raise ValueError(
+            "Public URL is required. Set 'public_url' in config or PUBLIC_URL environment variable"
+        )
+
+    realm_url = str(realm_url).rstrip("/")
+
+    logger.info("Configuring Keycloak Auth Provider:")
+    logger.info(f"  Realm URL: {realm_url}")
+    logger.info(f"  Public URL: {public_url}")
+    logger.info(f"  Audience: {audience or '(not set)'}")
+    logger.info(f"  Required scopes: {required_scopes or '[openid]'}")
+
+    provider_kwargs: Dict[str, Any] = {
+        "realm_url": realm_url,
+        "base_url": public_url,
+    }
+    if audience:
+        provider_kwargs["audience"] = audience
+    if required_scopes:
+        provider_kwargs["required_scopes"] = required_scopes
+
+    auth_provider = KeycloakAuthProvider(**provider_kwargs)
+
+    logger.info("=" * 70)
+    logger.info("FastMCP Keycloak Auth Provider configured successfully")
+    logger.info("  - Tokens verified directly against Keycloak JWKS (no proxy)")
+    logger.info("  - Dynamic Client Registration handled by Keycloak")
+    logger.info("  - No client_id/secret, JWT signing key, or Redis required")
+    logger.info("=" * 70)
+
+    return auth_provider
+
+
+def get_auth_config_summary(realm_url: str, audience: Optional[str], public_url: str) -> Dict[str, Any]:
+    """Get summary of Keycloak provider configuration for logging/debugging."""
+    return {
+        "provider": "Keycloak",
+        "realm_url": realm_url,
+        "authorization_endpoint": f"{realm_url}/protocol/openid-connect/auth",
+        "token_endpoint": f"{realm_url}/protocol/openid-connect/token",
+        "jwks_uri": f"{realm_url}/protocol/openid-connect/certs",
+        "audience": audience,
+        "public_url": public_url,
+    }
+{%- else -%}
 """
 FastMCP OAuth Proxy Configuration for {{ server_name }} MCP Server
 
@@ -71,7 +230,7 @@ def load_oidc_config_from_file(config_path: Optional[str] = None) -> Optional[Di
 
     # Standard Kubernetes ConfigMap/Secret mount paths
     search_paths.extend([
-        "/etc/mcp/oidc.yaml",
+        "/etc/mcp/oidc/oidc.yaml",
         "/config/oidc.yaml",
         "./oidc.yaml"
     ])
@@ -492,3 +651,4 @@ def get_auth_config_summary(issuer: str, audience: str, client_id: str, public_u
         "pkce_enabled": True,
         "consent_required": True
     }
+{%- endif %}

@@ -61,9 +61,9 @@ class TestGetPattern(TestPlugin):
 
             # Verify generation-workflow contains critical content
             workflow_markers = [
-                "Resources vs Tools",  # Critical distinction
-                "ONLY Python scripts",  # Bin scripts constraint
-                "Shell scripts (.sh) are NOT allowed",  # Explicit prohibition (exact wording)
+                "SCAFFOLD_INVENTORY.md",  # Required deliverable
+                "resources/read",  # How to retrieve scaffold files
+                "scaffold://",  # Resource URI format
                 "generate_server_scaffold",  # The actual tool to use
             ]
 
