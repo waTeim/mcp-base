@@ -79,18 +79,35 @@ Resources return template content or documentation as strings. Reading them crea
 
 ### Tools (Scaffold Generation)
 
-Tools generate scaffold artifacts and return resource references. Use
-`resources/read` with `scaffold://` URIs to retrieve content and write files
-to disk.
+Tools generate scaffold artifacts stored in memory. Each artifact is
+exposed via **two equivalent retrieval paths** (both return identical
+bytes):
+
+1. **Tool:** `read_scaffold_artifact(project_id, path)` — always works.
+2. **MCP resource:** `resources/read("scaffold://{project_id}/{path}")`
+   — each artifact is registered as a concrete MCP resource, so it
+   appears in `resources/list` and resolves directly. A URI-template
+   handler is also registered as a fallback.
 
 | Tool | Description | Creates Files? |
 |------|-------------|----------------|
-| `generate_server_scaffold` | **Generate complete MCP server project scaffold (artifacts)** | ❌ No - returns artifact references |
+| `generate_server_scaffold` | **Generate complete MCP server project scaffold (artifacts)** | ❌ No - returns file list + resource links |
 | `list_artifacts` | List all files in a generated project | ❌ No - returns JSON list |
+| `read_scaffold_artifact` | Fetch exact content for a single scaffold file (parity with `scaffold://` resource) | ❌ No - you must write it |
 | `render_template` | Render individual template to string | ⚠️ Returns string - you must write it |
 | `list_templates` | List available templates | ❌ No |
 | `list_patterns` | List pattern documentation | ❌ No |
 | `get_pattern` | Get specific pattern docs | ❌ No |
+
+### Generated Scaffold Resources
+
+In addition to the tools above, every generated artifact is available as
+an MCP resource:
+
+| URI | Description |
+|-----|-------------|
+| `scaffold://{project_id}/{path}` | Concrete resource for each generated file — appears in `resources/list` |
+| `artifact://{project_id}/{path}` | Alias (older clients that captured `artifact://` URIs) |
 
 ## Generated Server Structure
 

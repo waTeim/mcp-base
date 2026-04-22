@@ -186,7 +186,19 @@ Parameters:
 - `project_id`: Project ID from scaffold generation
 
 Returns JSON list of all files with metadata (path, size, type). Use
-`resources/read` with `scaffold://{project_id}/{path}` to fetch file content.
+`read_scaffold_artifact(project_id, path)` to fetch file content.
+
+#### `read_scaffold_artifact(project_id, path)`
+**Retrieve exact content of a single scaffold file**
+
+Parameters:
+- `project_id`: Project ID from scaffold generation
+- `path`: File path within the project (must match a path from `files`)
+
+Returns the exact file content as stored at scaffold generation time.
+This is the only retrieval API — URI-template resources (`scaffold://...`)
+are deliberately not registered because many MCP client aggregators don't
+forward URI templates.
 
 ## Template Variables
 
@@ -222,8 +234,11 @@ project_id = scaffold["project_id"]
 # 4. List artifacts (paths only)
 artifacts = await mcp.call_tool("list_artifacts", {"project_id": project_id})
 
-# 5. Read a small file via resources/read (content loads into context)
-small_file = await mcp.read_resource(f"scaffold://{project_id}/src/my_server.py")
+# 5. Read a single file's content (only retrieval API)
+small_file = await mcp.call_tool("read_scaffold_artifact", {
+    "project_id": project_id,
+    "path": "src/my_server.py",
+})
 
 # 6. Or render individual template
 template = await mcp.call_tool("render_template", {

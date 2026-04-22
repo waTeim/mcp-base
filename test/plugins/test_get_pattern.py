@@ -61,9 +61,9 @@ class TestGetPattern(TestPlugin):
 
             # Verify generation-workflow contains critical content
             workflow_markers = [
-                "SCAFFOLD_INVENTORY.md",  # Required deliverable
-                "resources/read",  # How to retrieve scaffold files
-                "scaffold://",  # Resource URI format
+                "SCAFFOLD_INVENTORY.md",  # Required deliverable (after 100% retrieval)
+                "SCAFFOLD_RETRIEVAL_FAILURE.md",  # Failure deliverable
+                "read_scaffold_artifact",  # Retrieval API
                 "generate_server_scaffold",  # The actual tool to use
             ]
 

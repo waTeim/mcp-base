@@ -341,8 +341,10 @@ prompts:
 
 ### 8. Artifact Retrieval Architecture
 
-Generated scaffolds are stored as in-memory artifacts and exposed via
-`scaffold://{project_id}/{path}` resources. The retrieval flow is:
+Generated scaffolds are stored as in-memory artifacts (see
+`src/artifact_store.py`) and exposed through **two equivalent retrieval
+paths**. Both paths consult the same `artifact_store` and return
+identical bytes:
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
@@ -350,26 +352,54 @@ Generated scaffolds are stored as in-memory artifacts and exposed via
 ├─────────────────────────────────────────────────────────────┤
 │                                                              │
 │  1. Agent generates scaffold                                 │
-│     generate_server_scaffold(...) → project_id              │
+│     generate_server_scaffold(...) →                          │
+│         project_id, files[], scaffold_resources,             │
+│         resource_links                                        │
 │                                                              │
-│  2. Agent lists files                                        │
-│     list_artifacts(project_id) → paths + scaffold URIs       │
+│  2. For each generated file, a concrete MCP TextResource     │
+│     is registered at scaffold://{project_id}/{path} so it    │
+│     appears in resources/list.                               │
 │                                                              │
-│  3. Agent reads files                                        │
-│     resources/read("scaffold://{project_id}/{path}")         │
+│  3. Agent retrieves each file via EITHER path:               │
+│     (A) read_scaffold_artifact(project_id, path)  [tool]    │
+│     (B) resources/read("scaffold://{project_id}/{path}")    │
 │                                                              │
-│  4. Agent writes files to disk                               │
+│  4. Agent writes the exact returned bytes to disk.           │
 │                                                              │
 └─────────────────────────────────────────────────────────────┘
 ```
 
-**Notes:**
-- `resources/read` returns full file content, so large files can consume
-  context. Prefer targeted reads and avoid loading unnecessary files.
+**Why both paths:**
+- The **tool path** (`read_scaffold_artifact`) always works, even when
+  the client's aggregator filters resources.
+- The **resource path** (`scaffold://...`) is the standard MCP idiom for
+  reading file-like content and is preferred by clients that honor
+  `resources/list` / `resources/read`.
+- Concrete registration (not just a URI template) is critical: many MCP
+  aggregators do not forward RFC 6570 resource templates, so a pure
+  template-based registration disappears from `resources/list`. The
+  `generate_server_scaffold` wrapper calls `mcp.add_resource(TextResource(
+  ...))` for every generated file to ensure each scaffold URI is
+  directly addressable.
+- A `scaffold://{project_id}/{path*}` URI template (and an
+  `artifact://{project_id}/{path*}` alias) is also registered as a
+  fallback for clients that *do* support resource templates.
 
-**Tools Provided:**
-1. `list_artifacts(project_id)` - List all files in generated project
-2. `resources/read` - Read `scaffold://{project_id}/{path}` to fetch file content
+**Notes:**
+- Both paths return full file content, so large files can consume
+  context. Prefer targeted reads and avoid loading unnecessary files.
+- Both paths share the retrieval GATE: if either fails for an expected
+  file, the agent must produce `SCAFFOLD_RETRIEVAL_FAILURE.md` rather
+  than reconstruct, render, or substitute content.
+
+**APIs Provided:**
+1. Tools:
+   - `list_artifacts(project_id)` — List all files in generated project
+   - `read_scaffold_artifact(project_id, path)` — Fetch exact file content
+2. Resources:
+   - `scaffold://{project_id}/{path}` — Concrete per-artifact resource
+   - `artifact://{project_id}/{path}` — Alias for legacy clients
+   - URI-template fallbacks for the same patterns
 
 ### 9. Test Plugin Architecture
 

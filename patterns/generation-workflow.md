@@ -4,15 +4,45 @@ This pattern describes how to use mcp-base to generate a complete MCP server pro
 
 ---
 
-## PHASE 1: CREATE SCAFFOLD_INVENTORY.md (REQUIRED DELIVERABLE)
+## CRITICAL ARTIFACT RETRIEVAL GATE (READ FIRST)
 
-Your **ONLY** goal in Phase 1 is to produce `SCAFFOLD_INVENTORY.md`.
+Artifact retrieval is a HARD GATE. **Invariant:** the scaffold is valid
+only if each file on disk was written from the EXACT bytes returned by
+the scaffold retrieval API for that file's path. Two equivalent paths
+are available — both return identical bytes:
 
-This document IS your deliverable. Quality determines success.
+- **Tool:** `read_scaffold_artifact(project_id, path)`
+- **Resource:** `resources/read("scaffold://{project_id}/{path}")`
+
+Every generated artifact is registered as a concrete MCP resource, so
+`scaffold://...` URIs appear in `resources/list` and resolve directly.
+Use whichever path your client supports.
+
+If ANY artifact retrieval fails, STOP IMMEDIATELY. Do NOT:
+- Reconstruct files from memory
+- Render templates as a substitute (`render_template` is **NOT** a fallback)
+- Create placeholder files
+- Infer contents from filenames
+- Continue to Phase 2 (customization)
+- Create `SCAFFOLD_INVENTORY.md` as if retrieval succeeded
+
+Instead, create `SCAFFOLD_RETRIEVAL_FAILURE.md` (template at the bottom of
+this page) and halt.
+
+`SCAFFOLD_INVENTORY.md` may only be created after **100% artifact
+retrieval**. If retrieval is incomplete, create
+`SCAFFOLD_RETRIEVAL_FAILURE.md` instead.
+
+---
+
+## PHASE 1: RETRIEVE ALL ARTIFACTS, THEN CREATE SCAFFOLD_INVENTORY.md
+
+Your Phase 1 deliverable is `SCAFFOLD_INVENTORY.md` — but it is only
+produced **after** every artifact has been retrieved exactly.
 
 **Why this approach works:**
 - "Create inventory" feels productive, not like busywork
-- Line counts and function names are verifiable - you can't fake them
+- Line counts and function names are verifiable — you can't fake them
 - Incomplete inventory = broken Phase 2 customization
 - The inventory preserves knowledge even if artifacts expire
 
@@ -34,15 +64,37 @@ file_count = result["file_count"]   # Expected count (e.g., 34)
 
 **This loop is MANDATORY. No exceptions. No shortcuts.**
 
-Use `resources/read` with the `scaffold://` URIs from `scaffold_resources`:
+Retrieve artifacts via EITHER path below — both return identical bytes:
+
+- **Tool:** `read_scaffold_artifact(project_id, path)` — always works.
+- **Resource:** `resources/read("scaffold://{project_id}/{path}")` — each
+  artifact is registered as a concrete MCP resource at generation time,
+  so it appears in `resources/list` and resolves directly. A URI-template
+  handler is also registered as a fallback for clients that support
+  RFC 6570 resource templates.
+
+Pick whichever path your client supports. The example below uses the
+tool path:
 
 ```python
 inventory_entries = []
-scaffold_resources = result["scaffold_resources"]  # Dict of path -> scaffold:// URI
+retrieval_failures = []
 
-for file_path, resource_uri in scaffold_resources.items():
-    # Get EXACT content via resources/read
-    content = await session.read_resource(resource_uri)
+for file_path in result["files"]:
+    try:
+        # (A) Tool path — always works:
+        content = await session.call_tool("read_scaffold_artifact", {
+            "project_id": project_id,
+            "path": file_path,
+        })
+        # (B) Equivalent resource path (same bytes):
+        #   content = await session.read_resource(
+        #       f"scaffold://{project_id}/{file_path}"
+        #   )
+    except Exception as e:
+        # RETRIEVAL GATE: do NOT substitute anything. Record and continue.
+        retrieval_failures.append((file_path, str(e)))
+        continue
 
     # Create parent directories if needed
     parent_dir = os.path.dirname(file_path)
@@ -75,6 +127,12 @@ for file_path, resource_uri in scaffold_resources.items():
     })
 
     print(f"✓ {file_path}")
+
+# RETRIEVAL GATE — check before writing SCAFFOLD_INVENTORY.md
+if retrieval_failures:
+    # STOP. Create SCAFFOLD_RETRIEVAL_FAILURE.md and halt.
+    # Do NOT render templates, do NOT reconstruct, do NOT continue.
+    raise SystemExit("Retrieval failed — see SCAFFOLD_RETRIEVAL_FAILURE.md")
 ```
 
 ### Step 3: Make Bin Scripts Executable
@@ -247,7 +305,7 @@ make helm-install
 ### "I wrote my own Dockerfile"
 
 **Problem**: Eagerness to "improve" led to deviation from scaffold.
-**Solution**: Use EXACT content from resources/read. Customize in Phase 2 if needed.
+**Solution**: Use EXACT content from `read_scaffold_artifact`. Customize in Phase 2 if needed.
 
 ### "I created a project subdirectory"
 
@@ -256,8 +314,24 @@ make helm-install
 
 ### "I used bash heredocs to write files faster"
 
-**Problem**: Bypassing resources/read creates untested, inconsistent files.
-**Solution**: Always use resources/read with scaffold:// URIs to retrieve scaffold content.
+**Problem**: Bypassing the retrieval API creates untested, inconsistent files.
+**Solution**: Always call `read_scaffold_artifact` to retrieve scaffold content.
+
+### "read_scaffold_artifact failed so I rendered the template instead"
+
+**Problem**: Template rendering is NOT a substitute for artifact retrieval.
+Rendered templates are unparameterized defaults — the scaffold artifacts
+include project-specific values the template doesn't know about.
+**Solution**: If retrieval fails, STOP and create
+`SCAFFOLD_RETRIEVAL_FAILURE.md`. Then retry generation or escalate. The
+retrieval gate is absolute.
+
+### "I reconstructed the missing file from memory"
+
+**Problem**: Memory-reconstruction silently violates the exact-artifact
+invariant and produces a scaffold that no longer matches what
+`generate_server_scaffold` actually emitted.
+**Solution**: Never reconstruct. Record the failure and halt.
 
 ### "I started adding my tools before all files were written"
 
@@ -299,4 +373,47 @@ mcp-base setup-rbac        # Set up Kubernetes RBAC
 In Phase 1, you retrieve files AND create a detailed inventory. The inventory proves completeness.
 In Phase 2, you customize using the inventory as your reference.
 
-Never skip the inventory. It's not optional - it IS the deliverable.
+Never skip the inventory. It's not optional — it IS the deliverable.
+
+**But:** `SCAFFOLD_INVENTORY.md` may only be created after 100% retrieval.
+If even one artifact fails to retrieve, the deliverable is
+`SCAFFOLD_RETRIEVAL_FAILURE.md` (template below), not a partial inventory.
+
+---
+
+## SCAFFOLD_RETRIEVAL_FAILURE.md Template
+
+Use this when any artifact cannot be retrieved. Do not write scaffold
+files if this report applies.
+
+```markdown
+# Scaffold Retrieval Failure
+
+- Project ID: <project_id>
+- Expected files: <file_count>
+- Retrieved files: <count>
+- Failed files: <count>
+- Files written to disk: none
+
+## Failed Artifact Reads
+
+| Path | Error |
+| --- | --- |
+| <path> | <exact error message> |
+
+## Conclusion
+
+Scaffold generation returned a manifest, but scaffold artifacts were not
+retrievable via either `read_scaffold_artifact` or
+`resources/read("scaffold://...")`. No scaffold files were written
+because doing so would violate the exact-artifact invariant.
+
+## Suggested Next Step
+
+Verify that the MCP server exposes either:
+- `read_scaffold_artifact` as a tool in the same session, OR
+- `scaffold://{project_id}/{path}` as a concrete MCP resource,
+
+and that the `project_id` has not expired. Retry generation if the
+server was restarted between calls.
+```

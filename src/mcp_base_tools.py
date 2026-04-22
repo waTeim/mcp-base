@@ -8,14 +8,18 @@ The mcp instance is passed in via register_tools() to avoid circular imports.
 """
 
 import json
+import logging
 import re
 import uuid
 from pathlib import Path
 from typing import Optional, Literal, List, Dict, Any
 
 from jinja2 import Environment, FileSystemLoader, select_autoescape
+from fastmcp.resources import TextResource
 
 from artifact_store import artifact_store, get_mime_type_for_path
+
+logger = logging.getLogger(__name__)
 
 # ============================================================================
 # Path Configuration
@@ -287,45 +291,72 @@ async def generate_server_scaffold_impl(
 
     Creates a full project structure with all necessary files for
     a production-ready Kubernetes MCP server. Files are stored as artifacts
-    and can be retrieved individually via resources/read with scaffold:// URIs.
+    keyed by project_id and exposed via TWO equivalent retrieval paths:
+
+      1. Tool — `read_scaffold_artifact(project_id, path)` — always works,
+         regardless of whether the client's aggregator forwards resources.
+      2. Resource — `resources/read("scaffold://{project_id}/{path}")` —
+         each artifact is registered as a concrete MCP resource so it
+         appears in `resources/list` and resolves directly. A URI-template
+         handler is also registered as a fallback.
+
+    Either path returns identical bytes. Pick whichever fits your client.
 
     ========================================================================
-    CRITICAL: PHASE 2 IS IMPOSSIBLE UNTIL PHASE 1 IS VERIFIED COMPLETE
+    CRITICAL ARTIFACT RETRIEVAL GATE
     ========================================================================
 
-    This is not advice. It is a logical dependency:
-    - You cannot customize files that don't exist on disk
-    - You cannot test without test-mcp.py written
-    - You cannot build without Dockerfile written
-    - ARTIFACTS EXPIRE - retrieve them NOW or lose them forever
+    Artifact retrieval is a HARD GATE. The scaffold is valid only if each
+    file on disk was written from the EXACT content returned by
+    `read_scaffold_artifact` for that file's path.
+
+    If ANY artifact retrieval fails, STOP IMMEDIATELY. Do NOT:
+      - Reconstruct files from memory
+      - Render templates as a substitute (`render_template` is NOT a fallback)
+      - Create placeholder files
+      - Infer missing contents from filenames
+      - Continue to Phase 2 (customization)
+      - Create SCAFFOLD_INVENTORY.md as if retrieval succeeded
+
+    Instead, create SCAFFOLD_RETRIEVAL_FAILURE.md documenting the failure
+    (template included in the returned `quick_start` field).
 
     Phase 2 (customization) is UNDEFINED until Phase 1 is verified complete.
     Treat Phase 2 as impossible, not just inadvisable, until then.
 
     ========================================================================
-    PHASE 1: SCAFFOLD RETRIEVAL (MECHANICAL - NO CREATIVITY)
+    PHASE 1: RETRIEVE ALL ARTIFACTS (MECHANICAL — NO CREATIVITY)
     ========================================================================
 
     This is MECHANICAL work. Think: copy machine, not architect.
 
-    REQUIRED STEPS (no exceptions):
-    1. Call this function - note file_count and scaffold_resources in response
-    2. Loop through EVERY file in the returned scaffold_resources dict
-    3. For EACH file: content = read_resource(scaffold://{project_id}/{path})
-    4. For EACH file: write EXACT content to ./path (current directory)
-    5. VERIFY: count files on disk == file_count from response
+    REQUIRED STEPS:
+    1. Call this function — note `file_count`, `files`, and
+       `scaffold_resources` in the response.
+    2. Loop through EVERY path in `files`. For each path, use EITHER:
+         (A) content = call_tool('read_scaffold_artifact', {
+                 'project_id': <project_id>, 'path': <path>
+             })
+         (B) content = read_resource('scaffold://<project_id>/<path>')
+       Both return identical bytes; pick whichever your client supports.
+    3. On success: write the EXACT returned bytes to ./<path>.
+    4. On failure: record the path and error — do NOT substitute anything.
 
-    ARTIFACTS EXPIRE. Do not pause. Do not skip files. Complete NOW.
+    After the loop:
+    - If any failures: STOP. Create SCAFFOLD_RETRIEVAL_FAILURE.md and halt.
+    - If all succeeded: proceed to Phase 1 verification.
 
     ========================================================================
     PHASE 1 VERIFICATION (REQUIRED GATE)
     ========================================================================
 
     You CANNOT proceed until you verify:
-    [ ] actual files on disk == file_count (e.g., 34 == 34)
-    [ ] All files from files_list exist on disk
+    [ ] Retrieved exactly file_count files (no skips)
+    [ ] Each file written with the EXACT bytes returned by the API
+    [ ] No placeholders, template renders, or reconstructions
+    [ ] Every path in `files` exists on disk
 
-    If verification fails, you failed. Generate a new scaffold.
+    Only after all boxes are checked: create SCAFFOLD_INVENTORY.md.
 
     ========================================================================
     PHASE 2: CUSTOMIZATION (IMPOSSIBLE UNTIL PHASE 1 VERIFIED)
@@ -355,7 +386,7 @@ async def generate_server_scaffold_impl(
     1. NON-DEVIATION RULE: Use MCPBase scaffold artifacts as the ONLY source of project files.
        DO NOT create alternate scaffolds or replacement files under any circumstances.
     2. ERROR HANDLING: On any tool or schema error, STOP immediately, report the full error,
-       and propose recovery using resources/read with scaffold:// URIs.
+       and propose recovery by retrying `read_scaffold_artifact` for the affected path.
        DO NOT attempt to work around errors by creating alternate scaffolds.
     3. PARAMETER DEFAULTS: Use default parameter values unless the user explicitly specifies otherwise.
        Do not override include_helm or include_test unless explicitly requested.
@@ -376,7 +407,9 @@ async def generate_server_scaffold_impl(
 
     Returns:
         JSON object with project metadata, file list, and scaffold_resources dict.
-        Use resources/read with scaffold://{project_id}/{path} URIs to retrieve individual files.
+        Retrieve individual files via either:
+          - `read_scaffold_artifact(project_id, path)` (tool), or
+          - `resources/read("scaffold://{project_id}/{path}")` (MCP resource).
 
         Structure:
         {
@@ -384,7 +417,8 @@ async def generate_server_scaffold_impl(
             "server_name": "Server Name",
             "file_count": 37,
             "files": ["Dockerfile", "src/...", ...],
-            "resource_links": [{"uri": "scaffold://...", "path": "...", ...}],
+            "scaffold_resources": {"<path>": "scaffold://<id>/<path>", ...},
+            "resource_links": [{"path": "...", "uri": "...", "mime_type": "..."}, ...],
             "quick_start": ["..."],
             "warnings": [],
             "truncated": false
@@ -592,24 +626,6 @@ class TestExampleTool(TestPlugin):
             description=f"Generated file for {server_name}"
         )
 
-    # Build resource links for all files (always)
-    resource_links = []
-    for path in sorted(files.keys()):
-        mime_type = get_mime_type_for_path(path)
-        filename = path.split("/")[-1]
-        resource_links.append({
-            "uri": f"scaffold://{project_id}/{path}",
-            "path": path,
-            "name": filename,
-            "mimeType": mime_type
-        })
-
-    # Build scaffold resource URIs for each file
-    scaffold_resources = {
-        path: f"scaffold://{project_id}/{path}"
-        for path in sorted(files.keys())
-    }
-
     # Always return a consistent JSON object structure
     result = {
         "project_id": project_id,
@@ -618,54 +634,113 @@ class TestExampleTool(TestPlugin):
         "server_name_kebab": server_name_kebab,
         "file_count": len(files),
         "files": sorted(files.keys()),
-        "scaffold_resources": scaffold_resources,
-        "resource_links": resource_links,
         "quick_start": [
             "========================================================================",
-            "PHASE 1: CREATE SCAFFOLD_INVENTORY.md (REQUIRED DELIVERABLE)",
+            "CRITICAL ARTIFACT RETRIEVAL GATE",
             "========================================================================",
             "",
-            "Your ONLY goal in Phase 1 is to produce SCAFFOLD_INVENTORY.md",
-            "This document IS your deliverable. Quality determines success.",
+            "Before writing any scaffold files, you MUST retrieve every scaffold",
+            "artifact via the `read_scaffold_artifact` tool. Retrieval is a HARD GATE.",
             "",
-            "REQUIRED STEPS (no exceptions, no shortcuts):",
-            f"1. For EACH of the {len(files)} files, use resources/read with the scaffold:// URI",
-            f"   Example: resources/read(uri='scaffold://{project_id}/src/{server_name_snake}_server.py')",
-            "2. Write each file to disk EXACTLY as retrieved",
-            "3. Make bin scripts executable: chmod +x bin/*",
-            "4. Create SCAFFOLD_INVENTORY.md with details for EACH file:",
-            "   - Filename and path",
-            "   - Line count (exact)",
-            "   - Size in bytes",
-            "   - First 5 function/class/constant names (if code file)",
+            "INVARIANT: The scaffold is valid only if each file on disk was written",
+            "from the EXACT content returned by read_scaffold_artifact for that",
+            "file's path. If this invariant cannot be satisfied, the correct",
+            "output is a FAILURE REPORT — not a partial scaffold.",
             "",
-            "SCAFFOLD RESOURCE URIs (use with resources/read):",
-            f"   All files available at: scaffold://{project_id}/{{path}}",
-            "   See 'scaffold_resources' field for complete URI list",
+            "If ANY artifact retrieval fails, STOP IMMEDIATELY. Do NOT:",
+            "  - Reconstruct files from memory",
+            "  - Render templates as a substitute (render_template is NOT a fallback)",
+            "  - Create placeholder files",
+            "  - Infer missing contents from filenames",
+            "  - Continue to customization",
+            "  - Create SCAFFOLD_INVENTORY.md as if retrieval succeeded",
             "",
-            "VERIFICATION HEADER (must be at top of SCAFFOLD_INVENTORY.md):",
-            f"  [ ] File count: Retrieved ___ of {len(files)} expected files",
-            "  [ ] All files written to disk with exact content",
-            "  [ ] All files have inventory entries below",
-            "  [ ] No placeholders created",
-            "  [ ] No files skipped",
-            "",
-            "CRITICAL: You cannot fake line counts or function names.",
-            "Phase 2 customization quality is DIRECTLY PROPORTIONAL to",
-            "Phase 1 inventory completeness. Incomplete inventory = broken code.",
+            "Instead, create SCAFFOLD_RETRIEVAL_FAILURE.md (template below).",
             "",
             "========================================================================",
-            "PHASE 2: CUSTOMIZE USING INVENTORY (ONLY AFTER PHASE 1 COMPLETE)",
+            "PHASE 1: RETRIEVE ALL ARTIFACTS (MECHANICAL — NO CREATIVITY)",
             "========================================================================",
             "",
-            "Given SCAFFOLD_INVENTORY.md showing all scaffold components:",
+            "Retrieval API — pick EITHER path (both return identical bytes):",
+            "",
+            "  (A) Tool call (always works):",
+            f"      content = call_tool('read_scaffold_artifact', {{",
+            f"          'project_id': '{project_id}',",
+            f"          'path': '<file path from files list>'",
+            f"      }})",
+            "",
+            "  (B) MCP resource (for clients that support resources/read):",
+            f"      content = read_resource('scaffold://{project_id}/<path>')",
+            "",
+            f"Loop through ALL {len(files)} paths in the 'files' field. For each:",
+            "  1. Retrieve via (A) or (B)",
+            "  2. On success: write the returned content to disk at ./<path>",
+            "  3. On failure: add the path to a retrieval_failures list — do NOT",
+            "     write anything for that file, do NOT substitute template content",
+            "",
+            "After the loop:",
+            "  - If retrieval_failures is empty: proceed to Phase 1 verification",
+            "  - If retrieval_failures is non-empty: STOP. Create",
+            "    SCAFFOLD_RETRIEVAL_FAILURE.md and halt. Do not continue.",
+            "",
+            "========================================================================",
+            "PHASE 1 VERIFICATION (REQUIRED GATE)",
+            "========================================================================",
+            "",
+            f"[ ] Retrieved exactly {len(files)} of {len(files)} expected files",
+            "[ ] Each file written to disk with the EXACT bytes returned by the tool",
+            "[ ] No placeholders, no template-rendered substitutes, no reconstructions",
+            "[ ] No files skipped",
+            "",
+            "Only after all four boxes are checked: create SCAFFOLD_INVENTORY.md",
+            "with one entry per file (path, line count, size in bytes, first 5",
+            "function/class names). Then chmod +x bin/*.",
+            "",
+            "========================================================================",
+            "SCAFFOLD_RETRIEVAL_FAILURE.md TEMPLATE (use on any retrieval error)",
+            "========================================================================",
+            "",
+            "# Scaffold Retrieval Failure",
+            "",
+            f"- Project ID: {project_id}",
+            f"- Expected files: {len(files)}",
+            "- Retrieved files: <count>",
+            "- Failed files: <count>",
+            "- Files written to disk: none",
+            "",
+            "## Failed Artifact Reads",
+            "",
+            "| Path | Error |",
+            "| --- | --- |",
+            "| <path> | <exact error message> |",
+            "",
+            "## Conclusion",
+            "",
+            "Scaffold generation returned a manifest, but scaffold artifacts were",
+            "not retrievable via read_scaffold_artifact. No scaffold files were",
+            "written because doing so would violate the exact-artifact invariant.",
+            "",
+            "## Suggested Next Step",
+            "",
+            "Verify that the MCP server exposes either:",
+            "  - read_scaffold_artifact as a tool in the same session, OR",
+            "  - scaffold://{project_id}/{path} as a concrete MCP resource",
+            "",
+            "and that the project_id has not expired. Retry generation if the",
+            "server was restarted between calls.",
+            "",
+            "========================================================================",
+            "PHASE 2: CUSTOMIZE (ONLY AFTER PHASE 1 VERIFIED COMPLETE)",
+            "========================================================================",
+            "",
             f"  - Customize src/{server_name_snake}_tools.py",
             f"  - Test: python src/{server_name_snake}_server.py --port {port}",
             "  - Configure: python bin/configure-make.py  # Then: mcp-base setup-oidc",
             "  - Deploy: make build && make push && make helm-install",
             "",
-            "Refer to the inventory to understand what exists before modifying.",
-            "Your customizations WILL FAIL if Phase 1 inventory was incomplete."
+            "Phase 2 is UNDEFINED until Phase 1 verification succeeded. A failed",
+            "Phase 1 means the correct output is SCAFFOLD_RETRIEVAL_FAILURE.md,",
+            "not customized code."
         ],
         "warnings": [],
         "truncated": False
@@ -673,7 +748,13 @@ class TestExampleTool(TestPlugin):
 
     # Add a summary field for backward compatibility if requested
     if output_description == "summary":
-        result["summary"] = f"Generated {len(files)} files for {server_name}. Use resources/read with scaffold://{project_id}/{{path}} URIs to retrieve files."
+        result["summary"] = (
+            f"Generated {len(files)} files for {server_name}. "
+            f"Retrieve each file via read_scaffold_artifact(project_id='{project_id}', path=<path>) "
+            f"or resources/read('scaffold://{project_id}/<path>') — both return identical bytes. "
+            f"If retrieval fails, STOP and create SCAFFOLD_RETRIEVAL_FAILURE.md — "
+            f"do not render templates or reconstruct files."
+        )
 
     return result
 
@@ -821,49 +902,54 @@ def register_resources(mcp):
         architecture_path = BASE_DIR / "ARCHITECTURE.md"
         return architecture_path.read_text()
 
-    # Dynamic artifact resource - list artifacts in a project
-    @mcp.resource("artifact://{project_id}")
-    def list_project_artifacts(project_id: str) -> str:
-        """
-        List all artifacts in a generated project.
+    # Scaffold artifact resources (URI-template fallbacks).
+    #
+    # Each artifact is ALSO registered as a concrete TextResource from the
+    # `generate_server_scaffold` tool wrapper (see register_tools). The
+    # concrete registration is what surfaces artifacts in `resources/list`
+    # and makes `resources/read(scaffold://{project_id}/{path})` resolvable
+    # through MCP aggregators that do not forward URI templates.
+    #
+    # The URI-template handlers below are kept as a fallback for clients and
+    # aggregators that *do* support RFC 6570 resource templates — they let
+    # a client resolve a scaffold URI even if the concrete registration has
+    # been pruned (e.g. after a server restart that dropped the in-memory
+    # FastMCP registry but where the artifact_store is still populated).
 
-        Args:
-            project_id: The project identifier (e.g., "my-server-abc12345")
-
-        Returns:
-            JSON list of artifact paths and scaffold:// URIs
-        """
-        artifacts = artifact_store.list_project(project_id)
-        if not artifacts:
-            return f"Error: No artifacts found for project: {project_id}"
-        return json.dumps(
-            [{"path": path, "uri": f"scaffold://{project_id}/{path}"} for path, _ in artifacts],
-            indent=2
-        )
-
-    # Dynamic artifact resource - read individual scaffold files
     @mcp.resource("scaffold://{project_id}/{path*}")
-    def read_scaffold_file(project_id: str, path: str) -> str:
+    def read_scaffold_resource(project_id: str, path: str) -> str:
         """
-        Read a scaffold file from a generated project.
+        Read a scaffold artifact by its scaffold:// URI.
 
-        Use resources/read with scaffold://{project_id}/{path} URI to retrieve
-        individual files from a generated scaffold.
-
-        Args:
-            project_id: The project identifier (e.g., "my-server-abc12345")
-            path: File path within the project (e.g., "src/my_server.py")
-
-        Returns:
-            File content as text
+        This is the URI-template fallback path. The preferred retrieval
+        paths are:
+          - Tool: `read_scaffold_artifact(project_id, path)` — always works
+          - Concrete resource: `resources/read("scaffold://<id>/<path>")` —
+            works on aggregators that surface concrete resources
         """
         artifact = artifact_store.get(project_id, path)
         if artifact is None:
-            available = artifact_store.list_project(project_id)
-            if not available:
-                return f"Error: Project '{project_id}' not found. It may have expired."
-            available_paths = [p for p, _ in available]
-            return f"Error: File '{path}' not found in project '{project_id}'.\nAvailable files:\n" + "\n".join(f"  - {p}" for p in available_paths[:10])
+            raise ValueError(
+                f"Scaffold artifact not found: scaffold://{project_id}/{path}. "
+                f"Call list_artifacts('{project_id}') to see available paths, "
+                f"or regenerate with generate_server_scaffold if the project expired."
+            )
+        return artifact.content
+
+    @mcp.resource("artifact://{project_id}/{path*}")
+    def read_artifact_resource(project_id: str, path: str) -> str:
+        """
+        Read a scaffold artifact by its artifact:// URI (alias for scaffold://).
+
+        The artifact_store uses artifact:// URIs internally; this handler
+        accepts them so older clients that captured artifact:// URIs still
+        resolve.
+        """
+        artifact = artifact_store.get(project_id, path)
+        if artifact is None:
+            raise ValueError(
+                f"Scaffold artifact not found: artifact://{project_id}/{path}"
+            )
         return artifact.content
 
 
@@ -932,8 +1018,11 @@ def register_tools(mcp):
         """
         Generate complete MCP server project scaffold.
 
-        Returns a JSON object with project metadata and scaffold_resources dict.
-        Use resources/read with scaffold://{project_id}/{path} URIs to retrieve individual files.
+        Returns a JSON object with project metadata and a list of file paths.
+        Each file is registered as an MCP resource at
+        `scaffold://{project_id}/{path}` AND is retrievable via the
+        `read_scaffold_artifact(project_id, path)` tool. Use whichever
+        retrieval path your client supports.
 
         NOTE: Utility scripts are NOT included. They are available via the mcp-base CLI:
         pip install mcp-base && mcp-base --help
@@ -948,11 +1037,12 @@ def register_tools(mcp):
         Returns:
             JSON object containing:
             - project_id: Unique identifier for artifacts
-            - scaffold_resources: Dict mapping file paths to scaffold:// URIs
             - files: List of all generated file paths
+            - scaffold_resources: Mapping of path -> scaffold:// resource URI
+            - resource_links: List of {path, uri, mime_type} for each artifact
             - quick_start: Steps to get started
         """
-        return await generate_server_scaffold_impl(
+        result = await generate_server_scaffold_impl(
             server_name=server_name,
             output_description=output_description,
             port=port,
@@ -963,13 +1053,50 @@ def register_tools(mcp):
             auth_type=auth_type
         )
 
+        # Register each artifact as a concrete MCP resource so it appears in
+        # `resources/list` and is directly addressable via `resources/read`.
+        # This is the primary fix for clients/aggregators that don't forward
+        # URI templates — the URI-template handler in register_resources
+        # remains as a fallback.
+        project_id = result["project_id"]
+        scaffold_resources: Dict[str, str] = {}
+        resource_links: List[Dict[str, str]] = []
+
+        for path, _artifact_uri in artifact_store.list_project(project_id):
+            artifact = artifact_store.get(project_id, path)
+            if artifact is None:
+                continue
+            scaffold_uri = f"scaffold://{project_id}/{path}"
+            try:
+                mcp.add_resource(TextResource(
+                    uri=scaffold_uri,
+                    name=f"scaffold:{project_id}:{path}",
+                    text=artifact.content,
+                    mime_type=artifact.mime_type,
+                    description=f"Scaffold file {path} for project {project_id}",
+                ))
+            except Exception as e:
+                logger.warning(
+                    f"Failed to register concrete scaffold resource {scaffold_uri}: {e}"
+                )
+            scaffold_resources[path] = scaffold_uri
+            resource_links.append({
+                "path": path,
+                "uri": scaffold_uri,
+                "mime_type": artifact.mime_type,
+            })
+
+        result["scaffold_resources"] = scaffold_resources
+        result["resource_links"] = resource_links
+        return result
+
     @mcp.tool(name="list_artifacts")
     async def list_artifacts(project_id: str) -> str:
         """
         List all generated artifacts in a project.
 
         Use this after generate_server_scaffold to see all available files,
-        then use resources/read with scaffold:// URIs to retrieve specific files.
+        then use read_scaffold_artifact to retrieve individual file content.
 
         CRITICAL: This is the authoritative source for project files. Always use
         the official artifact list - DO NOT create alternate file lists or replacement
@@ -990,5 +1117,72 @@ def register_tools(mcp):
         return json.dumps({
             "project_id": project_id,
             "file_count": len(artifacts),
-            "files": [path for path, _ in artifacts]
+            "files": [path for path, _ in artifacts],
+            "retrieval_api": {
+                "primary_tool": "read_scaffold_artifact(project_id, path)",
+                "primary_resource_uri": f"scaffold://{project_id}/<path>",
+                "notes": (
+                    "Every artifact is registered as a concrete MCP resource at "
+                    "scaffold://{project_id}/{path} AND is retrievable via the "
+                    "read_scaffold_artifact tool. Use whichever path your client "
+                    "supports; both return identical bytes."
+                ),
+                "gate": (
+                    "If any retrieval fails, STOP. Create "
+                    "SCAFFOLD_RETRIEVAL_FAILURE.md. Do NOT render templates or "
+                    "reconstruct files as a substitute."
+                ),
+            },
         }, indent=2)
+
+    @mcp.tool(name="read_scaffold_artifact")
+    async def read_scaffold_artifact(project_id: str, path: str) -> str:
+        """
+        Read the exact content of a single scaffold artifact.
+
+        This is the tool-based retrieval path. The same content is also
+        available as an MCP resource at `scaffold://{project_id}/{path}` —
+        each artifact is registered concretely at generation time, so
+        clients that support `resources/read` can use that path instead.
+        Both paths return identical bytes.
+
+        RETRIEVAL GATE (see generate_server_scaffold instructions):
+        If retrieval fails for ANY expected file — via either path — STOP.
+        Do not reconstruct the file from memory, do not render templates as
+        a substitute, do not create a placeholder. Produce a
+        SCAFFOLD_RETRIEVAL_FAILURE.md report instead, per the failure
+        template in the tool's instructions.
+
+        Args:
+            project_id: The project identifier returned by generate_server_scaffold
+            path: File path within the project (e.g., "src/my_server.py").
+                  Must match a path from the scaffold's `files` list exactly.
+
+        Returns:
+            Exact file content as stored at scaffold generation time.
+
+        Raises:
+            ValueError: If the project or file is not found. Treat this as a
+            retrieval failure — do NOT fall back to template rendering.
+        """
+        artifact = artifact_store.get(project_id, path)
+        if artifact is None:
+            available = artifact_store.list_project(project_id)
+            if not available:
+                all_projects = artifact_store.list_all_projects()
+                hint = (
+                    f"\n\nAvailable projects:\n" + "\n".join(f"  - {p}" for p in all_projects)
+                    if all_projects else
+                    "\n\nNo scaffold projects are currently stored. Call generate_server_scaffold first."
+                )
+                raise ValueError(
+                    f"Project '{project_id}' not found. It may have expired.{hint}"
+                )
+            available_paths = [p for p, _ in available]
+            raise ValueError(
+                f"File '{path}' not found in project '{project_id}'.\n"
+                f"Available files ({len(available_paths)}):\n"
+                + "\n".join(f"  - {p}" for p in available_paths[:20])
+                + ("\n  ..." if len(available_paths) > 20 else "")
+            )
+        return artifact.content
