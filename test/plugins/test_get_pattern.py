@@ -63,7 +63,8 @@ class TestGetPattern(TestPlugin):
             workflow_markers = [
                 "SCAFFOLD_INVENTORY.md",  # Required deliverable (after 100% retrieval)
                 "SCAFFOLD_RETRIEVAL_FAILURE.md",  # Failure deliverable
-                "read_scaffold_artifact",  # Retrieval API
+                "read_scaffold_artifact",  # Tool retrieval path
+                "scaffold://",  # Resource retrieval path
                 "generate_server_scaffold",  # The actual tool to use
             ]
 

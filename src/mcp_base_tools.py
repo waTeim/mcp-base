@@ -74,6 +74,346 @@ def to_pascal_case(name: str) -> str:
 
 
 # ============================================================================
+# Artifact Metadata Inference
+# ============================================================================
+#
+# Role/relevance/summary/notes are inferred from the generated file's output
+# path. The inference layer keeps the metadata tools compact — clients can
+# look at role+relevance to decide which artifacts to inspect locally before
+# customizing, without pulling any file bytes into model context.
+
+# Patterns are evaluated in order; the first match wins. Project-specific
+# snake_case tokens in output paths are matched with a loose regex so the
+# same rule covers any server name.
+_PY_NAME = r"[a-z][a-z0-9_]*"
+
+_ROLE_RULES = [
+    # (regex pattern against output path, role metadata dict)
+    (re.compile(rf"^src/{_PY_NAME}_test_server\.py$"), {
+        "role": "test_server",
+        "customization_relevance": "low",
+        "summary": "OIDC test server entrypoint used for automated tests.",
+        "customization_notes": [
+            "Rarely customized. Mirrors the production server but accepts OIDC JWTs directly."
+        ],
+        "verification_notes": [
+            "Run against --no-auth for headless CI when needed.",
+        ],
+    }),
+    (re.compile(rf"^src/{_PY_NAME}_server\.py$"), {
+        "role": "server_entrypoint",
+        "customization_relevance": "medium",
+        "summary": "FastMCP production server entrypoint (transport, auth, route wiring).",
+        "customization_notes": [
+            "Wire additional tool/resource modules via register_*() calls.",
+            "Keep auth middleware initialization aligned with auth_fastmcp.py.",
+        ],
+        "verification_notes": [
+            "python src/<snake>_server.py --port <port> and curl /healthz.",
+        ],
+    }),
+    (re.compile(rf"^src/{_PY_NAME}_tools\.py$"), {
+        "role": "tools_module",
+        "customization_relevance": "high",
+        "summary": "Shared tool / resource / prompt registration — primary customization surface.",
+        "customization_notes": [
+            "Add your tool implementations here using the @with_mcp_context pattern.",
+            "Register new resources/prompts in register_resources / register_prompts.",
+        ],
+        "verification_notes": [
+            "Exercise via test/test-mcp.py plugin tests.",
+        ],
+    }),
+    (re.compile(r"^src/auth_fastmcp\.py$"), {
+        "role": "auth_provider",
+        "customization_relevance": "low",
+        "summary": "FastMCP auth provider factory (auth0 / keycloak / oidc dispatch).",
+        "customization_notes": [
+            "Usually untouched. Edit only when switching/adding an auth_type.",
+        ],
+        "verification_notes": [],
+    }),
+    (re.compile(r"^src/auth_oidc\.py$"), {
+        "role": "auth_oidc",
+        "customization_relevance": "none",
+        "summary": "Generic OIDC middleware (copied as-is from mcp-base).",
+        "customization_notes": [
+            "Do not modify. Identical across generated projects.",
+        ],
+        "verification_notes": [],
+    }),
+    (re.compile(r"^src/mcp_context\.py$"), {
+        "role": "mcp_context",
+        "customization_relevance": "none",
+        "summary": "MCPContext dataclass and with_mcp_context decorator (copied as-is).",
+        "customization_notes": ["Do not modify."],
+        "verification_notes": [],
+    }),
+    (re.compile(r"^src/user_hash\.py$"), {
+        "role": "user_hash",
+        "customization_relevance": "none",
+        "summary": "User ID hashing utilities (copied as-is).",
+        "customization_notes": ["Do not modify."],
+        "verification_notes": [],
+    }),
+    (re.compile(r"^src/prompt_registry\.py$"), {
+        "role": "prompt_registry",
+        "customization_relevance": "low",
+        "summary": "Versioned prompt registry with ConfigMap hot-reload.",
+        "customization_notes": [
+            "Usually reused as-is; add prompts in chart/templates/prompts-configmap.yaml.",
+        ],
+        "verification_notes": [],
+    }),
+    (re.compile(r"^Dockerfile$"), {
+        "role": "container_prod",
+        "customization_relevance": "low",
+        "summary": "Production Dockerfile (multi-stage Python build).",
+        "customization_notes": [
+            "Adjust base image / system deps only if your tools require native libraries.",
+        ],
+        "verification_notes": ["docker build -t <image> . && docker run --rm <image>"],
+    }),
+    (re.compile(r"^Dockerfile\.test$"), {
+        "role": "container_test",
+        "customization_relevance": "low",
+        "summary": "Test-mode Dockerfile (no auth) for CI.",
+        "customization_notes": [],
+        "verification_notes": [],
+    }),
+    (re.compile(r"^requirements\.txt$"), {
+        "role": "python_requirements",
+        "customization_relevance": "medium",
+        "summary": "Python dependencies for the server.",
+        "customization_notes": [
+            "Append the packages your tools import (e.g. kubernetes, pydantic models).",
+        ],
+        "verification_notes": ["pip install -r requirements.txt in a fresh venv."],
+    }),
+    (re.compile(r"^Makefile$"), {
+        "role": "build_makefile",
+        "customization_relevance": "low",
+        "summary": "Build automation (build, push, test, helm-install targets).",
+        "customization_notes": ["Run `python bin/configure-make.py` to generate make.env first."],
+        "verification_notes": [],
+    }),
+    (re.compile(r"^bin/configure-make\.py$"), {
+        "role": "config_script",
+        "customization_relevance": "low",
+        "summary": "Generates make.env (registry, image names, namespace) for the Makefile.",
+        "customization_notes": [
+            "Run once before `make build`. Re-run when registry/namespace changes.",
+        ],
+        "verification_notes": [],
+    }),
+    (re.compile(r"^chart/Chart\.yaml$"), {
+        "role": "helm_chart_metadata",
+        "customization_relevance": "low",
+        "summary": "Helm chart metadata (name, version, Redis dependency).",
+        "customization_notes": [],
+        "verification_notes": ["helm lint chart/"],
+    }),
+    (re.compile(r"^chart/values\.yaml$"), {
+        "role": "helm_values",
+        "customization_relevance": "medium",
+        "summary": "Default Helm values (image, env, ingress, auth).",
+        "customization_notes": [
+            "Override per-environment via `helm install -f my-values.yaml`.",
+        ],
+        "verification_notes": ["helm template chart/ -f my-values.yaml"],
+    }),
+    (re.compile(r"^chart/templates/prompts-configmap\.yaml$"), {
+        "role": "helm_prompts_configmap",
+        "customization_relevance": "medium",
+        "summary": "ConfigMap backing the hot-reload prompt registry.",
+        "customization_notes": [
+            "Add project-specific prompts here; PromptRegistry will pick them up.",
+        ],
+        "verification_notes": [],
+    }),
+    (re.compile(r"^chart/templates/.+\.yaml$"), {
+        "role": "helm_template",
+        "customization_relevance": "low",
+        "summary": "Helm template (Kubernetes manifest rendered by chart).",
+        "customization_notes": [],
+        "verification_notes": [],
+    }),
+    (re.compile(r"^chart/templates/NOTES\.txt$"), {
+        "role": "helm_notes",
+        "customization_relevance": "none",
+        "summary": "Post-install NOTES shown to operators.",
+        "customization_notes": [],
+        "verification_notes": [],
+    }),
+    (re.compile(r"^chart/templates/_helpers\.tpl$"), {
+        "role": "helm_helpers",
+        "customization_relevance": "none",
+        "summary": "Helm template helpers.",
+        "customization_notes": [],
+        "verification_notes": [],
+    }),
+    (re.compile(r"^chart/\.helmignore$"), {
+        "role": "helm_ignore",
+        "customization_relevance": "none",
+        "summary": "Patterns excluded from `helm package`.",
+        "customization_notes": [],
+        "verification_notes": [],
+    }),
+    (re.compile(r"^test/test-mcp\.py$"), {
+        "role": "test_runner",
+        "customization_relevance": "low",
+        "summary": "Plugin-based test runner entrypoint.",
+        "customization_notes": [],
+        "verification_notes": ["./test/test-mcp.py --url http://localhost:8001/test --no-auth"],
+    }),
+    (re.compile(r"^test/get-user-token\.py$"), {
+        "role": "test_token_helper",
+        "customization_relevance": "none",
+        "summary": "Interactive helper to acquire an Auth0 user token.",
+        "customization_notes": [],
+        "verification_notes": [],
+    }),
+    (re.compile(r"^test/mcp-auth-proxy\.py$"), {
+        "role": "test_auth_proxy",
+        "customization_relevance": "none",
+        "summary": "Local auth proxy for test sessions.",
+        "customization_notes": [],
+        "verification_notes": [],
+    }),
+    (re.compile(r"^test/plugins/__init__\.py$"), {
+        "role": "test_plugin_base",
+        "customization_relevance": "none",
+        "summary": "TestPlugin/TestResult base classes (copied as-is).",
+        "customization_notes": [],
+        "verification_notes": [],
+    }),
+    (re.compile(r"^test/plugins/test_list_resources\.py$"), {
+        "role": "test_plugin",
+        "customization_relevance": "low",
+        "summary": "Standard plugin: verifies resources/list contents.",
+        "customization_notes": [],
+        "verification_notes": [],
+    }),
+    (re.compile(r"^test/plugins/test_read_resource\.py$"), {
+        "role": "test_plugin",
+        "customization_relevance": "low",
+        "summary": "Standard plugin: verifies resources/read.",
+        "customization_notes": [],
+        "verification_notes": [],
+    }),
+    (re.compile(r"^test/plugins/test_list_prompts\.py$"), {
+        "role": "test_plugin",
+        "customization_relevance": "low",
+        "summary": "Standard plugin: verifies prompts/list.",
+        "customization_notes": [],
+        "verification_notes": [],
+    }),
+    (re.compile(r"^test/plugins/test_example\.py$"), {
+        "role": "test_plugin_example",
+        "customization_relevance": "high",
+        "summary": "Starter test plugin — copy to build plugin tests for your tools.",
+        "customization_notes": [
+            "Rename the class, set tool_name, and fill in the test() body.",
+        ],
+        "verification_notes": [],
+    }),
+]
+
+_DEFAULT_ROLE = {
+    "role": "other",
+    "customization_relevance": "low",
+    "summary": "",
+    "customization_notes": [],
+    "verification_notes": [],
+}
+
+
+def _extract_python_symbols(content: str, max_symbols: int = 20) -> List[Dict[str, Any]]:
+    """Extract top-level function and class names from Python source."""
+    symbols: List[Dict[str, Any]] = []
+    for idx, raw_line in enumerate(content.splitlines(), start=1):
+        stripped = raw_line.lstrip()
+        indent = len(raw_line) - len(stripped)
+        if indent > 0:
+            continue
+        m = re.match(r"(?:async\s+)?def\s+([A-Za-z_][A-Za-z0-9_]*)", stripped)
+        if m:
+            symbols.append({"name": m.group(1), "kind": "function", "line_hint": idx})
+            if len(symbols) >= max_symbols:
+                break
+            continue
+        m = re.match(r"class\s+([A-Za-z_][A-Za-z0-9_]*)", stripped)
+        if m:
+            symbols.append({"name": m.group(1), "kind": "class", "line_hint": idx})
+            if len(symbols) >= max_symbols:
+                break
+    return symbols
+
+
+def _extract_python_dependencies(content: str, max_deps: int = 20) -> List[str]:
+    """Extract top-level module imports from Python source."""
+    seen: Dict[str, None] = {}
+    for raw_line in content.splitlines():
+        stripped = raw_line.lstrip()
+        if len(raw_line) - len(stripped) > 0:
+            continue
+        m = re.match(r"(?:from|import)\s+([A-Za-z_][A-Za-z0-9_\.]*)", stripped)
+        if m:
+            top = m.group(1).split(".", 1)[0]
+            if top not in seen:
+                seen[top] = None
+                if len(seen) >= max_deps:
+                    break
+    return list(seen.keys())
+
+
+def _infer_role(path: str) -> Dict[str, Any]:
+    """Look up the role/relevance/summary metadata for a generated path."""
+    for pattern, meta in _ROLE_RULES:
+        if pattern.match(path):
+            return dict(meta)
+    return dict(_DEFAULT_ROLE)
+
+
+def build_artifact_metadata(
+    project_id: str,
+    path: str,
+    *,
+    include_symbols: bool = True,
+    include_dependencies: bool = True,
+) -> Optional[Dict[str, Any]]:
+    """
+    Build a compact metadata record for a stored artifact.
+
+    Returns None when the artifact does not exist. The returned dict is
+    deliberately lightweight — no file contents — so metadata tools can be
+    invoked without bloating model context.
+    """
+    artifact = artifact_store.get(project_id, path)
+    if artifact is None:
+        return None
+
+    role_meta = _infer_role(path)
+    record: Dict[str, Any] = {
+        "project_id": project_id,
+        "path": path,
+        "uri": f"scaffold://{project_id}/{path}",
+        "mime_type": artifact.mime_type,
+        "size_bytes": artifact.size_bytes,
+        "sha256": artifact.sha256,
+        **role_meta,
+    }
+
+    if artifact.mime_type == "text/x-python":
+        if include_symbols:
+            record["symbols"] = _extract_python_symbols(artifact.content)
+        if include_dependencies:
+            record["dependencies"] = _extract_python_dependencies(artifact.content)
+
+    return record
+
+
+# ============================================================================
 # Tool Implementations
 # ============================================================================
 
@@ -287,109 +627,85 @@ async def generate_server_scaffold_impl(
     auth_type: Literal["auth0", "keycloak", "oidc"] = "auth0"
 ) -> Dict[str, Any]:
     """
-    Generate complete MCP server project scaffold.
+    Generate complete MCP server project scaffold (resource-first).
 
-    Creates a full project structure with all necessary files for
-    a production-ready Kubernetes MCP server. Files are stored as artifacts
-    keyed by project_id and exposed via TWO equivalent retrieval paths:
-
-      1. Tool — `read_scaffold_artifact(project_id, path)` — always works,
-         regardless of whether the client's aggregator forwards resources.
-      2. Resource — `resources/read("scaffold://{project_id}/{path}")` —
-         each artifact is registered as a concrete MCP resource so it
-         appears in `resources/list` and resolves directly. A URI-template
-         handler is also registered as a fallback.
-
-    Either path returns identical bytes. Pick whichever fits your client.
+    Returns a COMPACT manifest — no file bytes in the tool output. Every
+    generated file is stored and exposed as a concrete MCP resource at
+    `scaffold://{project_id}/{path}`. Bulk byte transfer is intended to
+    happen via `resources/read`; tool outputs stay context-light.
 
     ========================================================================
-    CRITICAL ARTIFACT RETRIEVAL GATE
+    RETRIEVAL CONTRACT (resource-first)
     ========================================================================
 
-    Artifact retrieval is a HARD GATE. The scaffold is valid only if each
-    file on disk was written from the EXACT content returned by
-    `read_scaffold_artifact` for that file's path.
+    Primary (bulk bytes):
+        resources/read("scaffold://{project_id}/{path}")
+        → returns exact file bytes. Verify each file's local hash matches
+          the artifact's `sha256`.
 
-    If ANY artifact retrieval fails, STOP IMMEDIATELY. Do NOT:
-      - Reconstruct files from memory
+    Primary (coordination metadata):
+        list_scaffold_artifact_metadata(project_id)
+        read_scaffold_artifact_metadata(project_id, path)
+        → compact metadata (role, relevance, symbols, notes). No contents.
+
+    Last-resort compatibility fallback (context-bloat risk):
+        read_scaffold_artifact(project_id, path)
+        → returns full file bytes in tool output. DO NOT USE if
+          resources/read is available. Reserved for tool-only proxy
+          aggregators that drop resources entirely (e.g. OpenAI's
+          codex_apps).
+
+    ========================================================================
+    HARD GATE
+    ========================================================================
+
+    Scaffold validity requires every on-disk file to be byte-identical to
+    the stored artifact. Verify via `sha256` after writing. On ANY retrieval
+    failure, STOP and produce SCAFFOLD_RETRIEVAL_FAILURE.md
+    (template in the `failure_report_template` field). Do NOT:
+      - Reconstruct from memory
       - Render templates as a substitute (`render_template` is NOT a fallback)
       - Create placeholder files
       - Infer missing contents from filenames
-      - Continue to Phase 2 (customization)
-      - Create SCAFFOLD_INVENTORY.md as if retrieval succeeded
+      - Continue to customization with an incomplete scaffold
 
-    Instead, create SCAFFOLD_RETRIEVAL_FAILURE.md documenting the failure
-    (template included in the returned `quick_start` field).
-
-    Phase 2 (customization) is UNDEFINED until Phase 1 is verified complete.
-    Treat Phase 2 as impossible, not just inadvisable, until then.
+    SCAFFOLD_INVENTORY.md may be produced only after 100% verified retrieval.
 
     ========================================================================
-    PHASE 1: RETRIEVE ALL ARTIFACTS (MECHANICAL — NO CREATIVITY)
+    INTENDED AGENT WORKFLOW
     ========================================================================
 
-    This is MECHANICAL work. Think: copy machine, not architect.
-
-    REQUIRED STEPS:
-    1. Call this function — note `file_count`, `files`, and
-       `scaffold_resources` in the response.
-    2. Loop through EVERY path in `files`. For each path, use EITHER:
-         (A) content = call_tool('read_scaffold_artifact', {
-                 'project_id': <project_id>, 'path': <path>
-             })
-         (B) content = read_resource('scaffold://<project_id>/<path>')
-       Both return identical bytes; pick whichever your client supports.
-    3. On success: write the EXACT returned bytes to ./<path>.
-    4. On failure: record the path and error — do NOT substitute anything.
-
-    After the loop:
-    - If any failures: STOP. Create SCAFFOLD_RETRIEVAL_FAILURE.md and halt.
-    - If all succeeded: proceed to Phase 1 verification.
-
-    ========================================================================
-    PHASE 1 VERIFICATION (REQUIRED GATE)
-    ========================================================================
-
-    You CANNOT proceed until you verify:
-    [ ] Retrieved exactly file_count files (no skips)
-    [ ] Each file written with the EXACT bytes returned by the API
-    [ ] No placeholders, template renders, or reconstructions
-    [ ] Every path in `files` exists on disk
-
-    Only after all boxes are checked: create SCAFFOLD_INVENTORY.md.
-
-    ========================================================================
-    PHASE 2: CUSTOMIZATION (IMPOSSIBLE UNTIL PHASE 1 VERIFIED)
-    ========================================================================
-
-    Only after verification passes:
-    - Customize the *_tools.py file for your specific functionality
-    - Add any additional dependencies to requirements.txt
+    1. Call generate_server_scaffold. Read the `artifacts` manifest — each
+       entry has path, uri, mime_type, size_bytes, sha256, role,
+       customization_relevance, and summary.
+    2. For each artifact, resources/read the uri and write bytes to the
+       local workspace at `path`.
+    3. Verify local SHA256 matches `artifacts[i].sha256`.
+    4. Create SCAFFOLD_INVENTORY.md only after 100% hash match.
+    5. Inspect only files where `customization_relevance` is high or medium.
+       Use read_scaffold_artifact_metadata for symbols/notes before opening
+       files locally.
+    6. Customize locally; chmod +x bin/*; configure-make.py; build/push/deploy.
 
     ========================================================================
 
     The scaffold includes:
     - src/ - Server code, tools, auth modules, test server
     - bin/ - Configuration scripts (bin/configure-make.py)
-    - chart/ - Complete Helm chart with ALL templates (deployment, service, ingress, etc.)
-    - test/ - Test framework with driver scripts and plugin tests
-    - Dockerfile - Production container
-    - Dockerfile.test - Test container (no auth, for CI/CD)
-    - Makefile - Build targets including: build, build-test, push, push-test, test
-    - requirements.txt
+    - chart/ - Complete Helm chart with ALL templates
+    - test/ - Plugin-based test framework
+    - Dockerfile, Dockerfile.test, Makefile, requirements.txt
 
-    NOTE: Most utility scripts are available via the mcp-base CLI (pip install mcp-base).
-    Exception: bin/configure-make.py IS included to generate make.env for Makefile config.
-    For OIDC/auth setup, use: mcp-base setup-oidc
+    NOTE: Utility scripts (setup-oidc, add-user, etc.) are available via
+    the mcp-base CLI (`pip install mcp-base`). Exception:
+    bin/configure-make.py IS included to generate make.env.
 
     CRITICAL USAGE RULES:
-    1. NON-DEVIATION RULE: Use MCPBase scaffold artifacts as the ONLY source of project files.
-       DO NOT create alternate scaffolds or replacement files under any circumstances.
-    2. ERROR HANDLING: On any tool or schema error, STOP immediately, report the full error,
-       and propose recovery by retrying `read_scaffold_artifact` for the affected path.
-       DO NOT attempt to work around errors by creating alternate scaffolds.
-    3. PARAMETER DEFAULTS: Use default parameter values unless the user explicitly specifies otherwise.
-       Do not override include_helm or include_test unless explicitly requested.
+    1. NON-DEVIATION: scaffold artifacts are the ONLY source of project files.
+    2. ERROR HANDLING: on retrieval error, report the exact error and retry;
+       do NOT substitute alternate scaffolds or rendered templates.
+    3. PARAMETER DEFAULTS: don't override include_helm / include_test unless
+       explicitly requested.
 
     Args:
         server_name: Human-readable server name (e.g., "Kubernetes Manager MCP")
@@ -406,20 +722,27 @@ async def generate_server_scaffold_impl(
                    - "oidc": Generic OIDC middleware for other IdPs (Dex, Okta, etc.)
 
     Returns:
-        JSON object with project metadata, file list, and scaffold_resources dict.
-        Retrieve individual files via either:
-          - `read_scaffold_artifact(project_id, path)` (tool), or
-          - `resources/read("scaffold://{project_id}/{path}")` (MCP resource).
-
-        Structure:
+        Compact JSON manifest — no file contents. Shape:
         {
             "project_id": "server-name-abc123",
             "server_name": "Server Name",
             "file_count": 37,
-            "files": ["Dockerfile", "src/...", ...],
-            "scaffold_resources": {"<path>": "scaffold://<id>/<path>", ...},
-            "resource_links": [{"path": "...", "uri": "...", "mime_type": "..."}, ...],
-            "quick_start": ["..."],
+            "artifacts": [
+                {
+                    "path": "src/foo_server.py",
+                    "uri": "scaffold://server-name-abc123/src/foo_server.py",
+                    "mime_type": "text/x-python",
+                    "size_bytes": 4096,
+                    "sha256": "<hex digest>",
+                    "role": "server_entrypoint",
+                    "customization_relevance": "medium",
+                    "summary": "..."
+                },
+                ...
+            ],
+            "retrieval_contract": { ... },
+            "workflow": [ ... ],
+            "failure_report_template": { ... },
             "warnings": [],
             "truncated": false
         }
@@ -615,7 +938,7 @@ class TestExampleTool(TestPlugin):
     # Generate unique project ID for artifact storage
     project_id = f"{server_name_kebab}-{uuid.uuid4().hex[:8]}"
 
-    # Store all files as artifacts
+    # Store all files as artifacts (size_bytes/sha256 computed in Artifact.__post_init__)
     for path, content in files.items():
         mime_type = get_mime_type_for_path(path)
         artifact_store.store(
@@ -626,134 +949,105 @@ class TestExampleTool(TestPlugin):
             description=f"Generated file for {server_name}"
         )
 
-    # Always return a consistent JSON object structure
+    # Build the compact artifacts manifest. Each entry carries URI + digest
+    # + role hints so the agent can plan assembly and customization without
+    # reading any file bytes into model context.
+    artifacts_manifest: List[Dict[str, Any]] = []
+    for path in sorted(files.keys()):
+        meta = build_artifact_metadata(
+            project_id, path,
+            include_symbols=False,
+            include_dependencies=False,
+        )
+        if meta is None:
+            continue
+        artifacts_manifest.append({
+            "path": meta["path"],
+            "uri": meta["uri"],
+            "mime_type": meta["mime_type"],
+            "size_bytes": meta["size_bytes"],
+            "sha256": meta["sha256"],
+            "role": meta["role"],
+            "customization_relevance": meta["customization_relevance"],
+            "summary": meta["summary"],
+        })
+
     result = {
         "project_id": project_id,
         "server_name": server_name,
         "server_name_snake": server_name_snake,
         "server_name_kebab": server_name_kebab,
         "file_count": len(files),
-        "files": sorted(files.keys()),
-        "quick_start": [
-            "========================================================================",
-            "CRITICAL ARTIFACT RETRIEVAL GATE",
-            "========================================================================",
-            "",
-            "Before writing any scaffold files, you MUST retrieve every scaffold",
-            "artifact via the `read_scaffold_artifact` tool. Retrieval is a HARD GATE.",
-            "",
-            "INVARIANT: The scaffold is valid only if each file on disk was written",
-            "from the EXACT content returned by read_scaffold_artifact for that",
-            "file's path. If this invariant cannot be satisfied, the correct",
-            "output is a FAILURE REPORT — not a partial scaffold.",
-            "",
-            "If ANY artifact retrieval fails, STOP IMMEDIATELY. Do NOT:",
-            "  - Reconstruct files from memory",
-            "  - Render templates as a substitute (render_template is NOT a fallback)",
-            "  - Create placeholder files",
-            "  - Infer missing contents from filenames",
-            "  - Continue to customization",
-            "  - Create SCAFFOLD_INVENTORY.md as if retrieval succeeded",
-            "",
-            "Instead, create SCAFFOLD_RETRIEVAL_FAILURE.md (template below).",
-            "",
-            "========================================================================",
-            "PHASE 1: RETRIEVE ALL ARTIFACTS (MECHANICAL — NO CREATIVITY)",
-            "========================================================================",
-            "",
-            "Retrieval API — pick EITHER path (both return identical bytes):",
-            "",
-            "  (A) Tool call (always works):",
-            f"      content = call_tool('read_scaffold_artifact', {{",
-            f"          'project_id': '{project_id}',",
-            f"          'path': '<file path from files list>'",
-            f"      }})",
-            "",
-            "  (B) MCP resource (for clients that support resources/read):",
-            f"      content = read_resource('scaffold://{project_id}/<path>')",
-            "",
-            f"Loop through ALL {len(files)} paths in the 'files' field. For each:",
-            "  1. Retrieve via (A) or (B)",
-            "  2. On success: write the returned content to disk at ./<path>",
-            "  3. On failure: add the path to a retrieval_failures list — do NOT",
-            "     write anything for that file, do NOT substitute template content",
-            "",
-            "After the loop:",
-            "  - If retrieval_failures is empty: proceed to Phase 1 verification",
-            "  - If retrieval_failures is non-empty: STOP. Create",
-            "    SCAFFOLD_RETRIEVAL_FAILURE.md and halt. Do not continue.",
-            "",
-            "========================================================================",
-            "PHASE 1 VERIFICATION (REQUIRED GATE)",
-            "========================================================================",
-            "",
-            f"[ ] Retrieved exactly {len(files)} of {len(files)} expected files",
-            "[ ] Each file written to disk with the EXACT bytes returned by the tool",
-            "[ ] No placeholders, no template-rendered substitutes, no reconstructions",
-            "[ ] No files skipped",
-            "",
-            "Only after all four boxes are checked: create SCAFFOLD_INVENTORY.md",
-            "with one entry per file (path, line count, size in bytes, first 5",
-            "function/class names). Then chmod +x bin/*.",
-            "",
-            "========================================================================",
-            "SCAFFOLD_RETRIEVAL_FAILURE.md TEMPLATE (use on any retrieval error)",
-            "========================================================================",
-            "",
-            "# Scaffold Retrieval Failure",
-            "",
-            f"- Project ID: {project_id}",
-            f"- Expected files: {len(files)}",
-            "- Retrieved files: <count>",
-            "- Failed files: <count>",
-            "- Files written to disk: none",
-            "",
-            "## Failed Artifact Reads",
-            "",
-            "| Path | Error |",
-            "| --- | --- |",
-            "| <path> | <exact error message> |",
-            "",
-            "## Conclusion",
-            "",
-            "Scaffold generation returned a manifest, but scaffold artifacts were",
-            "not retrievable via read_scaffold_artifact. No scaffold files were",
-            "written because doing so would violate the exact-artifact invariant.",
-            "",
-            "## Suggested Next Step",
-            "",
-            "Verify that the MCP server exposes either:",
-            "  - read_scaffold_artifact as a tool in the same session, OR",
-            "  - scaffold://{project_id}/{path} as a concrete MCP resource",
-            "",
-            "and that the project_id has not expired. Retry generation if the",
-            "server was restarted between calls.",
-            "",
-            "========================================================================",
-            "PHASE 2: CUSTOMIZE (ONLY AFTER PHASE 1 VERIFIED COMPLETE)",
-            "========================================================================",
-            "",
-            f"  - Customize src/{server_name_snake}_tools.py",
-            f"  - Test: python src/{server_name_snake}_server.py --port {port}",
-            "  - Configure: python bin/configure-make.py  # Then: mcp-base setup-oidc",
-            "  - Deploy: make build && make push && make helm-install",
-            "",
-            "Phase 2 is UNDEFINED until Phase 1 verification succeeded. A failed",
-            "Phase 1 means the correct output is SCAFFOLD_RETRIEVAL_FAILURE.md,",
-            "not customized code."
+        "artifacts": artifacts_manifest,
+        "retrieval_contract": {
+            "bulk_bytes": (
+                "Use resources/read for scaffold://{project_id}/{path} URIs. "
+                "Every artifact is registered as a concrete MCP resource."
+            ),
+            "metadata": (
+                "Use list_scaffold_artifact_metadata(project_id) or "
+                "read_scaffold_artifact_metadata(project_id, path) for coordination "
+                "data (role, relevance, symbols, notes) without file contents."
+            ),
+            "fallback_full_content": (
+                "read_scaffold_artifact(project_id, path) is a LAST-RESORT "
+                "fallback for tool-only proxy aggregators (e.g. OpenAI's "
+                "codex_apps) that drop resources. DO NOT USE if resources/read "
+                "is available — it returns full bytes into tool output and "
+                "will blow model context for any non-trivial scaffold."
+            ),
+            "gate": (
+                "Scaffold validity requires each on-disk file to be byte-identical "
+                "to the stored artifact (verify via sha256). On any retrieval "
+                "failure, produce SCAFFOLD_RETRIEVAL_FAILURE.md and stop — do not "
+                "render templates, reconstruct, or substitute."
+            ),
+        },
+        "workflow": [
+            "1. For each artifact URI, call resources/read and write exact bytes to ./<path>.",
+            "2. Verify local hash == artifacts[i].sha256 for every file.",
+            "3. Only after 100% verification, create SCAFFOLD_INVENTORY.md.",
+            "4. Inspect only files with customization_relevance='high' or 'medium'; "
+            "use read_scaffold_artifact_metadata for symbols/notes before opening locally.",
+            "5. Customize locally. chmod +x bin/*.",
+            f"6. python bin/configure-make.py && make build && make push && make helm-install.",
         ],
+        "failure_report_template": {
+            "filename": "SCAFFOLD_RETRIEVAL_FAILURE.md",
+            "markdown": (
+                "# Scaffold Retrieval Failure\n\n"
+                f"- Project ID: {project_id}\n"
+                f"- Expected files: {len(files)}\n"
+                "- Retrieved files: <count>\n"
+                "- Failed files: <count>\n"
+                "- Files written to disk: none\n\n"
+                "## Failed Artifact Reads\n\n"
+                "| Path | URI | Error |\n"
+                "| --- | --- | --- |\n"
+                "| <path> | <scaffold uri> | <exact error message> |\n\n"
+                "## Conclusion\n\n"
+                "Scaffold generation returned a manifest, but scaffold artifacts were\n"
+                "not retrievable via resources/read (scaffold://...) nor via\n"
+                "read_scaffold_artifact. No scaffold files were written because\n"
+                "doing so would violate the exact-artifact invariant.\n\n"
+                "## Suggested Next Step\n\n"
+                "Verify that the MCP server exposes scaffold:// resources or\n"
+                "read_scaffold_artifact in the same session, and that the project_id\n"
+                "has not expired. Retry generation if the server was restarted.\n"
+            ),
+        },
         "warnings": [],
-        "truncated": False
+        "truncated": False,
     }
 
-    # Add a summary field for backward compatibility if requested
     if output_description == "summary":
         result["summary"] = (
             f"Generated {len(files)} files for {server_name}. "
-            f"Retrieve each file via read_scaffold_artifact(project_id='{project_id}', path=<path>) "
-            f"or resources/read('scaffold://{project_id}/<path>') — both return identical bytes. "
-            f"If retrieval fails, STOP and create SCAFFOLD_RETRIEVAL_FAILURE.md — "
-            f"do not render templates or reconstruct files."
+            f"Primary retrieval: resources/read('scaffold://{project_id}/<path>'). "
+            f"Use list_scaffold_artifact_metadata / read_scaffold_artifact_metadata for "
+            f"coordination data without file contents. read_scaffold_artifact is a "
+            f"compatibility fallback only. On any retrieval failure, stop and produce "
+            f"SCAFFOLD_RETRIEVAL_FAILURE.md."
         )
 
     return result
@@ -1016,31 +1310,24 @@ def register_tools(mcp):
         auth_type: Literal["auth0", "keycloak", "oidc"] = "auth0"
     ) -> Dict[str, Any]:
         """
-        Generate complete MCP server project scaffold.
+        Generate an MCP server project scaffold (resource-first).
 
-        Returns a JSON object with project metadata and a list of file paths.
-        Each file is registered as an MCP resource at
-        `scaffold://{project_id}/{path}` AND is retrievable via the
-        `read_scaffold_artifact(project_id, path)` tool. Use whichever
-        retrieval path your client supports.
+        Returns a COMPACT manifest: per-artifact metadata (path, uri,
+        mime_type, size_bytes, sha256, role, relevance, summary) plus a
+        retrieval_contract. No file contents are returned by this tool —
+        bulk bytes must be fetched via `resources/read("scaffold://...")`.
+        See `retrieval_contract` in the response for the full contract
+        (metadata tools, bounded reads, and the compatibility fallback).
 
-        NOTE: Utility scripts are NOT included. They are available via the mcp-base CLI:
-        pip install mcp-base && mcp-base --help
+        NOTE: Utility scripts are NOT included. They are available via the
+        mcp-base CLI: `pip install mcp-base && mcp-base --help`.
 
         Args:
             auth_type: Authentication type (default: "auth0"):
                        - "auth0": FastMCP Auth0Provider OAuth proxy
-                       - "keycloak": FastMCP KeycloakAuthProvider (DCR-based, requires
+                       - "keycloak": FastMCP KeycloakAuthProvider (requires
                          Keycloak >= 26.6.0 and fastmcp >= 3.2.4)
-                       - "oidc": Generic OIDC middleware for other IdPs (Dex, Okta, etc.)
-
-        Returns:
-            JSON object containing:
-            - project_id: Unique identifier for artifacts
-            - files: List of all generated file paths
-            - scaffold_resources: Mapping of path -> scaffold:// resource URI
-            - resource_links: List of {path, uri, mime_type} for each artifact
-            - quick_start: Steps to get started
+                       - "oidc": Generic OIDC middleware for other IdPs
         """
         result = await generate_server_scaffold_impl(
             server_name=server_name,
@@ -1053,15 +1340,11 @@ def register_tools(mcp):
             auth_type=auth_type
         )
 
-        # Register each artifact as a concrete MCP resource so it appears in
-        # `resources/list` and is directly addressable via `resources/read`.
-        # This is the primary fix for clients/aggregators that don't forward
-        # URI templates — the URI-template handler in register_resources
-        # remains as a fallback.
+        # Register each artifact as a concrete MCP resource so it shows up
+        # in `resources/list` and is directly addressable via
+        # `resources/read`. Resource-first retrieval depends on this — the
+        # URI-template handler in register_resources is just a fallback.
         project_id = result["project_id"]
-        scaffold_resources: Dict[str, str] = {}
-        resource_links: List[Dict[str, str]] = []
-
         for path, _artifact_uri in artifact_store.list_project(project_id):
             artifact = artifact_store.get(project_id, path)
             if artifact is None:
@@ -1079,34 +1362,23 @@ def register_tools(mcp):
                 logger.warning(
                     f"Failed to register concrete scaffold resource {scaffold_uri}: {e}"
                 )
-            scaffold_resources[path] = scaffold_uri
-            resource_links.append({
-                "path": path,
-                "uri": scaffold_uri,
-                "mime_type": artifact.mime_type,
-            })
 
-        result["scaffold_resources"] = scaffold_resources
-        result["resource_links"] = resource_links
         return result
 
     @mcp.tool(name="list_artifacts")
     async def list_artifacts(project_id: str) -> str:
         """
-        List all generated artifacts in a project.
+        List generated artifact paths and URIs (compact).
 
-        Use this after generate_server_scaffold to see all available files,
-        then use read_scaffold_artifact to retrieve individual file content.
-
-        CRITICAL: This is the authoritative source for project files. Always use
-        the official artifact list - DO NOT create alternate file lists or replacement
-        scaffolds.
+        Backwards-compatible path listing. For coordination metadata (role,
+        relevance, symbols, notes), prefer `list_scaffold_artifact_metadata`.
+        For bulk bytes, prefer `resources/read("scaffold://...")`.
 
         Args:
             project_id: The project identifier returned by generate_server_scaffold
 
         Returns:
-            JSON list of available artifact paths
+            JSON with file paths and matching scaffold:// URIs.
         """
         artifacts = artifact_store.list_project(project_id)
         if not artifacts:
@@ -1118,40 +1390,134 @@ def register_tools(mcp):
             "project_id": project_id,
             "file_count": len(artifacts),
             "files": [path for path, _ in artifacts],
-            "retrieval_api": {
-                "primary_tool": "read_scaffold_artifact(project_id, path)",
-                "primary_resource_uri": f"scaffold://{project_id}/<path>",
-                "notes": (
-                    "Every artifact is registered as a concrete MCP resource at "
-                    "scaffold://{project_id}/{path} AND is retrievable via the "
-                    "read_scaffold_artifact tool. Use whichever path your client "
-                    "supports; both return identical bytes."
-                ),
-                "gate": (
-                    "If any retrieval fails, STOP. Create "
-                    "SCAFFOLD_RETRIEVAL_FAILURE.md. Do NOT render templates or "
-                    "reconstruct files as a substitute."
-                ),
+            "artifact_uris": [
+                {"path": path, "uri": f"scaffold://{project_id}/{path}"}
+                for path, _ in artifacts
+            ],
+            "retrieval_contract": {
+                "bulk_bytes": "resources/read('scaffold://{project_id}/{path}')",
+                "metadata": "list_scaffold_artifact_metadata / read_scaffold_artifact_metadata",
+                "fallback": "read_scaffold_artifact (context-bloat risk)",
             },
         }, indent=2)
+
+    @mcp.tool(name="list_scaffold_artifact_metadata")
+    async def list_scaffold_artifact_metadata(project_id: str) -> str:
+        """
+        Compact metadata for every artifact in a project (no contents).
+
+        Intended to be the first tool called after generate_server_scaffold.
+        Returns per-file: path, uri, mime_type, size_bytes, sha256, role,
+        customization_relevance, summary, and (for Python files) a symbol
+        list. Use this to plan which artifacts need deeper inspection
+        before spending context on file contents.
+
+        Args:
+            project_id: Project ID from generate_server_scaffold.
+
+        Returns:
+            JSON {project_id, file_count, artifacts: [...]}
+        """
+        artifacts = artifact_store.list_project(project_id)
+        if not artifacts:
+            all_projects = artifact_store.list_all_projects()
+            if all_projects:
+                return (
+                    f"Error: Project '{project_id}' not found.\n\n"
+                    "Available projects:\n" + "\n".join(f"  - {p}" for p in all_projects)
+                )
+            return "Error: No artifacts stored. Call generate_server_scaffold first."
+
+        records: List[Dict[str, Any]] = []
+        for path, _ in artifacts:
+            meta = build_artifact_metadata(
+                project_id, path,
+                include_symbols=True,
+                include_dependencies=False,
+            )
+            if meta is None:
+                continue
+            # Strip project_id/path duplication at the envelope level.
+            meta.pop("project_id", None)
+            records.append(meta)
+
+        return json.dumps({
+            "project_id": project_id,
+            "file_count": len(records),
+            "artifacts": records,
+        }, indent=2)
+
+    @mcp.tool(name="read_scaffold_artifact_metadata")
+    async def read_scaffold_artifact_metadata(project_id: str, path: str) -> str:
+        """
+        Detailed metadata for a single artifact (no file contents).
+
+        Returns the same fields as list_scaffold_artifact_metadata plus,
+        for Python files, a `dependencies` list (top-level imports) and
+        richer symbol entries with line hints. Use this before deciding
+        to read the full file via resources/read.
+
+        Args:
+            project_id: Project ID from generate_server_scaffold.
+            path: File path within the project.
+        """
+        meta = build_artifact_metadata(
+            project_id, path,
+            include_symbols=True,
+            include_dependencies=True,
+        )
+        if meta is None:
+            available = artifact_store.list_project(project_id)
+            if not available:
+                all_projects = artifact_store.list_all_projects()
+                if all_projects:
+                    return (
+                        f"Error: Project '{project_id}' not found.\n\n"
+                        "Available projects:\n" + "\n".join(f"  - {p}" for p in all_projects)
+                    )
+                return "Error: No artifacts stored. Call generate_server_scaffold first."
+            available_paths = [p for p, _ in available]
+            return (
+                f"Error: File '{path}' not found in project '{project_id}'.\n"
+                f"Available files ({len(available_paths)}):\n"
+                + "\n".join(f"  - {p}" for p in available_paths[:20])
+                + ("\n  ..." if len(available_paths) > 20 else "")
+            )
+        return json.dumps(meta, indent=2)
 
     @mcp.tool(name="read_scaffold_artifact")
     async def read_scaffold_artifact(project_id: str, path: str) -> str:
         """
-        Read the exact content of a single scaffold artifact.
+        ⚠️ LAST-RESORT COMPATIBILITY FALLBACK — DO NOT USE IF RESOURCES
+        ARE AVAILABLE. ⚠️
 
-        This is the tool-based retrieval path. The same content is also
-        available as an MCP resource at `scaffold://{project_id}/{path}` —
-        each artifact is registered concretely at generation time, so
-        clients that support `resources/read` can use that path instead.
-        Both paths return identical bytes.
+        Reads the FULL content of a single scaffold artifact and returns
+        it inside tool output, which pulls every byte into the model
+        context window. For a typical scaffold (30+ files) this will
+        blow the context budget and push other tool results out.
+
+        The correct bulk-bytes path is ALWAYS:
+
+            resources/read("scaffold://{project_id}/{path}")
+
+        That path keeps artifact bytes out of model context entirely —
+        the client writes them straight to disk. Use
+        `list_scaffold_artifact_metadata` and
+        `read_scaffold_artifact_metadata` for coordination data
+        (compact, no file contents).
+
+        Call this tool ONLY when the MCP client in use cannot invoke
+        `resources/read` at all — e.g. OpenAI's `codex_apps` proxy,
+        which forwards only tools and drops resources/prompts
+        entirely. If your client supports `resources/read`, using this
+        tool is a bug: switch to the resource path.
 
         RETRIEVAL GATE (see generate_server_scaffold instructions):
-        If retrieval fails for ANY expected file — via either path — STOP.
+        If retrieval fails for ANY expected file — via any path — STOP.
         Do not reconstruct the file from memory, do not render templates as
         a substitute, do not create a placeholder. Produce a
         SCAFFOLD_RETRIEVAL_FAILURE.md report instead, per the failure
-        template in the tool's instructions.
+        template in the generate_server_scaffold response.
 
         Args:
             project_id: The project identifier returned by generate_server_scaffold
