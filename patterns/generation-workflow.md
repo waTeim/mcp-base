@@ -86,17 +86,27 @@ The tool output is a compact manifest — **no file contents**. Each
 
 - `path` — file path within the project
 - `uri` — `scaffold://{project_id}/{path}`
-- `mime_type`, `size_bytes`, `sha256`
+- `mime_type`, `size_bytes`, `sha256`, `hash_algorithm`
+- `content_encoding` (`"utf-8"`), `line_endings` (`"lf"` / `"crlf"`)
+- `executable` (bool), `permissions` (e.g. `"0755"` / `"0644"`)
+- `post_write_actions` — list of commands to run after writing the file
+  to disk (e.g., `["chmod +x bin/configure-make.py"]` for bin scripts;
+  empty for regular files)
 - `role` — e.g., `tools_module`, `server_entrypoint`, `helm_values`
 - `customization_relevance` — `high` | `medium` | `low` | `none`
 - `summary` — one-line description
+
+Note: the generation manifest does **not** include Python API details
+(symbols, exports, imports). Call `list_scaffold_artifact_metadata` or
+`read_scaffold_artifact_metadata` when you're ready to customize — those
+tools add the public API surface without loading file contents.
 
 ### Step 2: Retrieve Bytes via Resources and Verify Hashes
 
 **This is the primary path. Tool output is not used for bulk bytes.**
 
 ```python
-import hashlib, os
+import hashlib, os, subprocess
 
 retrieval_failures = []
 
@@ -122,14 +132,23 @@ for entry in artifacts:
     parent = os.path.dirname(entry["path"])
     if parent:
         os.makedirs(parent, exist_ok=True)
-    with open(entry["path"], "w") as f:
+    with open(entry["path"], "w", encoding=entry["content_encoding"]) as f:
         f.write(content)
+
+    # Apply operational metadata — permissions + post-write actions.
+    os.chmod(entry["path"], int(entry["permissions"], 8))
+    for cmd in entry.get("post_write_actions", []):
+        subprocess.run(cmd, shell=True, check=True)
 
 # RETRIEVAL GATE — check before writing SCAFFOLD_INVENTORY.md
 if retrieval_failures:
     # STOP. Create SCAFFOLD_RETRIEVAL_FAILURE.md and halt.
     raise SystemExit("Retrieval failed — see SCAFFOLD_RETRIEVAL_FAILURE.md")
 ```
+
+The `permissions` and `post_write_actions` fields replace the old
+hardcoded `chmod +x bin/*` rule — the manifest now tells the agent
+exactly which files need executable bits.
 
 **Tool-only fallback** (clients that cannot invoke `resources/read`):
 
@@ -142,36 +161,46 @@ content = await session.call_tool("read_scaffold_artifact", {
 # Verify sha256 the same way — the integrity gate is unchanged.
 ```
 
-### Step 3: Collect Coordination Metadata (No Contents)
+### Step 3: Collect the API Surface (No File Contents)
 
-For inventory-building, prefer `list_scaffold_artifact_metadata` — it
-returns role, summary, customization_relevance, and top-level symbols
-for every file in one compact call, with no file contents:
+`list_scaffold_artifact_metadata` returns, in one compact call, the
+**public API surface** of every Python module in the scaffold along
+with role/relevance/summary fields — no file contents. This is the
+materialization contract: it is enough to write new code that imports
+from and calls into the scaffold modules without ever pulling their
+bytes into model context.
 
 ```python
 meta = await session.call_tool("list_scaffold_artifact_metadata", {
     "project_id": project_id,
 })
 
-# Per-entry fields: path, uri, mime_type, size_bytes, sha256, role,
-# customization_relevance, summary, symbols (name + line_hint).
+# Per-entry fields:
+#   path, uri, mime_type, size_bytes, sha256, hash_algorithm,
+#   content_encoding, line_endings,
+#   executable, permissions, post_write_actions,
+#   role, customization_relevance, summary,
+#   customization_notes, verification_notes,
+#   (Python files:) symbols, exports
+#
+# Each `symbols[i]` entry is AST-extracted and carries:
+#   name, kind (function / async_function / class),
+#   line_hint, signature, decorators, summary (first line of docstring)
+# For classes, `methods` is a list of the same shape covering public
+# methods and __init__.
 ```
 
-For a deeper look at one file without reading it in full, use
-`read_scaffold_artifact_metadata` — it adds dependencies and
-customization notes to the per-artifact metadata already returned by
-`list_scaffold_artifact_metadata`. If you then need to see the file
-contents, read the local copy written in Step 2 rather than calling
-any tool — the local file is byte-identical (sha256-verified) and
-doesn't round-trip through model context.
+`read_scaffold_artifact_metadata(project_id, path)` returns the same
+shape for a single file and additionally includes an `imports` list
+(top-level modules the file imports). Call it before customizing a
+specific file so you can see what it already depends on.
 
-### Step 4: Make Bin Scripts Executable
+If you still need to see the file contents, read the local copy
+written in Step 2 rather than calling any tool — the local file is
+byte-identical (sha256-verified) and doesn't round-trip through model
+context.
 
-```bash
-chmod +x bin/*
-```
-
-### Step 5: Create SCAFFOLD_INVENTORY.md
+### Step 4: Create SCAFFOLD_INVENTORY.md
 
 **This is the Phase 1 deliverable. It is written only after 100%
 retrieval with verified hashes.**

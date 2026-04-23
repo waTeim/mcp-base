@@ -198,11 +198,24 @@ not enter model context unless you explicitly read them.
 
 #### Primary — coordination metadata (tools, no file contents)
 
-- `list_scaffold_artifact_metadata(project_id)` — compact per-artifact
-  metadata for the whole scaffold: role, customization_relevance,
-  summary, symbols, sha256.
-- `read_scaffold_artifact_metadata(project_id, path)` — detailed
-  metadata for one artifact; adds dependencies and customization notes.
+The manifest returned by `generate_server_scaffold` is the
+**materialization contract**: every entry carries enough operational
+metadata to write the file correctly without loading contents.
+
+- Each manifest entry has: `path`, `uri`, `mime_type`, `size_bytes`,
+  `sha256`, `hash_algorithm`, `content_encoding`, `line_endings`,
+  `executable`, `permissions`, `post_write_actions`, `role`,
+  `customization_relevance`, `summary`.
+- `list_scaffold_artifact_metadata(project_id)` — the same manifest
+  fields **plus** the AST-extracted public API surface for every Python
+  file: `symbols` (with full signatures, decorators, docstring
+  summaries; nested `methods` for classes) and `exports`. This is
+  what lets an agent write calling code like
+  `from mcp_context import with_mcp_context` without ever reading
+  `mcp_context.py` into context.
+- `read_scaffold_artifact_metadata(project_id, path)` — same shape for
+  a single file, additionally adding `imports` (top-level modules the
+  file depends on).
 
 #### Lightweight listing
 

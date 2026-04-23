@@ -98,9 +98,9 @@ keeps artifact contents out of the model context.
 
 | Tool | Description | Puts bytes in model context? |
 |------|-------------|------------------------------|
-| `generate_server_scaffold` | Create project; returns compact manifest (path, uri, sha256, role, summary) | ❌ No — no file contents |
-| `list_scaffold_artifact_metadata` | Compact metadata for every artifact (role, relevance, symbols) | ❌ No — no file contents |
-| `read_scaffold_artifact_metadata` | Detailed metadata for one artifact (adds dependencies, notes) | ❌ No — no file contents |
+| `generate_server_scaffold` | Create project; returns compact manifest (path, uri, sha256, operational fields, role) | ❌ No — no file contents |
+| `list_scaffold_artifact_metadata` | Manifest fields + AST-extracted API surface for every Python file (symbols with signatures/decorators/docstrings, exports) | ❌ No — no file contents |
+| `read_scaffold_artifact_metadata` | Same shape for a single file; adds `imports` | ❌ No — no file contents |
 | `list_artifacts` | Lightweight path + URI listing | ❌ No |
 | `read_scaffold_artifact` | **LAST-RESORT fallback** — full bytes in tool output. Use only when `resources/read` is unavailable (e.g. tool-only proxies like OpenAI's `codex_apps`). | ⚠️ Yes — blows model context on large scaffolds |
 | `render_template` | Render individual template to string | ⚠️ Returns string — **not** a scaffold substitute |

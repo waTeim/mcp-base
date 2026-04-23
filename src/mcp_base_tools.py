@@ -7,12 +7,13 @@ Tools are decorated with @mcp.tool() and follow the standard pattern.
 The mcp instance is passed in via register_tools() to avoid circular imports.
 """
 
+import ast
 import json
 import logging
 import re
 import uuid
 from pathlib import Path
-from typing import Optional, Literal, List, Dict, Any
+from typing import Optional, Literal, List, Dict, Any, Tuple
 
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 from fastmcp.resources import TextResource
@@ -328,43 +329,191 @@ _DEFAULT_ROLE = {
 }
 
 
-def _extract_python_symbols(content: str, max_symbols: int = 20) -> List[Dict[str, Any]]:
-    """Extract top-level function and class names from Python source."""
+def _unparse(node: Optional[ast.AST]) -> str:
+    """Best-effort ast.unparse; returns empty string on failure."""
+    if node is None:
+        return ""
+    try:
+        return ast.unparse(node)
+    except Exception:
+        return ""
+
+
+def _arg_to_str(arg: ast.arg, default: Optional[ast.AST]) -> str:
+    parts = [arg.arg]
+    if arg.annotation is not None:
+        parts.append(": " + _unparse(arg.annotation))
+    if default is not None:
+        parts.append(" = " + _unparse(default))
+    return "".join(parts)
+
+
+def _format_signature(node: ast.AST) -> str:
+    """Build a signature string like `(a: int, b: str = "x") -> bool`."""
+    if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+        return ""
+    args = node.args
+    parts: List[str] = []
+
+    posonly = list(args.posonlyargs or [])
+    regular = list(args.args or [])
+    defaults = list(args.defaults or [])
+    total_pos = len(posonly) + len(regular)
+    # defaults apply to the tail of (posonly + regular)
+    default_start = total_pos - len(defaults)
+    combined = posonly + regular
+    for i, a in enumerate(combined):
+        d = defaults[i - default_start] if i >= default_start else None
+        parts.append(_arg_to_str(a, d))
+        if posonly and i == len(posonly) - 1:
+            parts.append("/")
+
+    if args.vararg is not None:
+        parts.append("*" + _arg_to_str(args.vararg, None))
+    elif args.kwonlyargs:
+        parts.append("*")
+
+    for a, d in zip(args.kwonlyargs or [], args.kw_defaults or []):
+        parts.append(_arg_to_str(a, d))
+
+    if args.kwarg is not None:
+        parts.append("**" + _arg_to_str(args.kwarg, None))
+
+    sig = "(" + ", ".join(parts) + ")"
+    if node.returns is not None:
+        sig += " -> " + _unparse(node.returns)
+    return sig
+
+
+def _docstring_summary(node: ast.AST) -> str:
+    """Return the first line of a node's docstring, or ''."""
+    try:
+        doc = ast.get_docstring(node)
+    except Exception:
+        doc = None
+    if not doc:
+        return ""
+    return doc.strip().splitlines()[0].strip()
+
+
+def _decorators(node: ast.AST) -> List[str]:
+    dec_list = getattr(node, "decorator_list", None) or []
+    return [_unparse(d) for d in dec_list if d is not None]
+
+
+def _is_public(name: str) -> bool:
+    return bool(name) and not name.startswith("_")
+
+
+def _function_record(node: ast.AST, kind_override: Optional[str] = None) -> Dict[str, Any]:
+    is_async = isinstance(node, ast.AsyncFunctionDef)
+    kind = kind_override or ("async_function" if is_async else "function")
+    return {
+        "name": node.name,
+        "kind": kind,
+        "line_hint": node.lineno,
+        "signature": _format_signature(node),
+        "decorators": _decorators(node),
+        "summary": _docstring_summary(node),
+    }
+
+
+def _class_record(node: ast.ClassDef) -> Dict[str, Any]:
+    methods: List[Dict[str, Any]] = []
+    for item in node.body:
+        if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            # Include public methods plus __init__ (the primary constructor
+            # contract the agent must call into).
+            if _is_public(item.name) or item.name == "__init__":
+                methods.append(_function_record(item, kind_override=(
+                    "async_method" if isinstance(item, ast.AsyncFunctionDef) else "method"
+                )))
+    return {
+        "name": node.name,
+        "kind": "class",
+        "line_hint": node.lineno,
+        "decorators": _decorators(node),
+        "base_classes": [_unparse(b) for b in (node.bases or []) if b is not None],
+        "summary": _docstring_summary(node),
+        "methods": methods,
+    }
+
+
+def _extract_python_api(
+    content: str,
+    max_symbols: int = 40,
+    max_imports: int = 40,
+) -> Dict[str, Any]:
+    """
+    AST-extract the public API surface of a Python source file.
+
+    Returns a dict with:
+      - symbols: list of top-level public function/class records (signatures,
+                 decorators, docstring summaries, methods for classes)
+      - exports: list of public top-level symbol names
+      - imports: list of deduplicated top-level module imports
+
+    On SyntaxError, returns an empty structure rather than raising — the
+    scaffold's stored bytes are still authoritative even if our metadata
+    extractor can't parse them.
+    """
+    try:
+        tree = ast.parse(content)
+    except SyntaxError:
+        return {"symbols": [], "exports": [], "imports": []}
+
     symbols: List[Dict[str, Any]] = []
-    for idx, raw_line in enumerate(content.splitlines(), start=1):
-        stripped = raw_line.lstrip()
-        indent = len(raw_line) - len(stripped)
-        if indent > 0:
-            continue
-        m = re.match(r"(?:async\s+)?def\s+([A-Za-z_][A-Za-z0-9_]*)", stripped)
-        if m:
-            symbols.append({"name": m.group(1), "kind": "function", "line_hint": idx})
-            if len(symbols) >= max_symbols:
-                break
-            continue
-        m = re.match(r"class\s+([A-Za-z_][A-Za-z0-9_]*)", stripped)
-        if m:
-            symbols.append({"name": m.group(1), "kind": "class", "line_hint": idx})
-            if len(symbols) >= max_symbols:
-                break
-    return symbols
+    exports: List[str] = []
+    seen_imports: Dict[str, None] = {}
+
+    for node in tree.body:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            if not _is_public(node.name):
+                continue
+            if len(symbols) < max_symbols:
+                symbols.append(_function_record(node))
+                exports.append(node.name)
+        elif isinstance(node, ast.ClassDef):
+            if not _is_public(node.name):
+                continue
+            if len(symbols) < max_symbols:
+                symbols.append(_class_record(node))
+                exports.append(node.name)
+        elif isinstance(node, ast.Import):
+            for alias in node.names:
+                top = alias.name.split(".", 1)[0]
+                if top not in seen_imports and len(seen_imports) < max_imports:
+                    seen_imports[top] = None
+        elif isinstance(node, ast.ImportFrom):
+            # Only record absolute imports (skip relative `from . import x`).
+            if node.module and node.level == 0:
+                top = node.module.split(".", 1)[0]
+                if top not in seen_imports and len(seen_imports) < max_imports:
+                    seen_imports[top] = None
+
+    return {
+        "symbols": symbols,
+        "exports": exports,
+        "imports": list(seen_imports.keys()),
+    }
 
 
-def _extract_python_dependencies(content: str, max_deps: int = 20) -> List[str]:
-    """Extract top-level module imports from Python source."""
-    seen: Dict[str, None] = {}
-    for raw_line in content.splitlines():
-        stripped = raw_line.lstrip()
-        if len(raw_line) - len(stripped) > 0:
-            continue
-        m = re.match(r"(?:from|import)\s+([A-Za-z_][A-Za-z0-9_\.]*)", stripped)
-        if m:
-            top = m.group(1).split(".", 1)[0]
-            if top not in seen:
-                seen[top] = None
-                if len(seen) >= max_deps:
-                    break
-    return list(seen.keys())
+# ----- Operational metadata helpers --------------------------------------
+
+_EXECUTABLE_PATH_RULES = [
+    re.compile(r"^bin/.+\.py$"),
+    re.compile(r"^test/[^/]+\.py$"),  # test/test-mcp.py, test/get-user-token.py, etc.
+]
+
+
+def _is_executable_path(path: str) -> bool:
+    """True if the generated file should be marked +x after write."""
+    return any(rule.match(path) for rule in _EXECUTABLE_PATH_RULES)
+
+
+def _detect_line_endings(content: str) -> str:
+    """Return 'crlf' if the content contains any \\r\\n, else 'lf'."""
+    return "crlf" if "\r\n" in content else "lf"
 
 
 def _infer_role(path: str) -> Dict[str, Any]:
@@ -380,20 +529,30 @@ def build_artifact_metadata(
     path: str,
     *,
     include_symbols: bool = True,
-    include_dependencies: bool = True,
+    include_imports: bool = True,
 ) -> Optional[Dict[str, Any]]:
     """
     Build a compact metadata record for a stored artifact.
 
     Returns None when the artifact does not exist. The returned dict is
     deliberately lightweight — no file contents — so metadata tools can be
-    invoked without bloating model context.
+    invoked without bloating model context. It is, however, rich enough
+    to serve as a materialization contract: the agent can write the file
+    from resources/read bytes, chmod it, and import from it without ever
+    pulling the file into model context.
+
+    Operational fields (always present):
+      - content_encoding, line_endings, hash_algorithm
+      - executable, permissions, post_write_actions
     """
     artifact = artifact_store.get(project_id, path)
     if artifact is None:
         return None
 
     role_meta = _infer_role(path)
+    is_executable = _is_executable_path(path)
+    post_write_actions = [f"chmod +x {path}"] if is_executable else []
+
     record: Dict[str, Any] = {
         "project_id": project_id,
         "path": path,
@@ -401,14 +560,22 @@ def build_artifact_metadata(
         "mime_type": artifact.mime_type,
         "size_bytes": artifact.size_bytes,
         "sha256": artifact.sha256,
+        "hash_algorithm": "sha256",
+        "content_encoding": "utf-8",
+        "line_endings": _detect_line_endings(artifact.content),
+        "executable": is_executable,
+        "permissions": "0755" if is_executable else "0644",
+        "post_write_actions": post_write_actions,
         **role_meta,
     }
 
     if artifact.mime_type == "text/x-python":
+        api = _extract_python_api(artifact.content)
         if include_symbols:
-            record["symbols"] = _extract_python_symbols(artifact.content)
-        if include_dependencies:
-            record["dependencies"] = _extract_python_dependencies(artifact.content)
+            record["symbols"] = api["symbols"]
+            record["exports"] = api["exports"]
+        if include_imports:
+            record["imports"] = api["imports"]
 
     return record
 
@@ -950,14 +1117,18 @@ class TestExampleTool(TestPlugin):
         )
 
     # Build the compact artifacts manifest. Each entry carries URI + digest
+    # + operational fields (permissions, post-write actions, line endings)
     # + role hints so the agent can plan assembly and customization without
-    # reading any file bytes into model context.
+    # reading any file bytes into model context. Python symbol/import
+    # surfaces are NOT included at this level — call
+    # list_scaffold_artifact_metadata or read_scaffold_artifact_metadata
+    # for API-contract details when customization is imminent.
     artifacts_manifest: List[Dict[str, Any]] = []
     for path in sorted(files.keys()):
         meta = build_artifact_metadata(
             project_id, path,
             include_symbols=False,
-            include_dependencies=False,
+            include_imports=False,
         )
         if meta is None:
             continue
@@ -967,6 +1138,12 @@ class TestExampleTool(TestPlugin):
             "mime_type": meta["mime_type"],
             "size_bytes": meta["size_bytes"],
             "sha256": meta["sha256"],
+            "hash_algorithm": meta["hash_algorithm"],
+            "content_encoding": meta["content_encoding"],
+            "line_endings": meta["line_endings"],
+            "executable": meta["executable"],
+            "permissions": meta["permissions"],
+            "post_write_actions": meta["post_write_actions"],
             "role": meta["role"],
             "customization_relevance": meta["customization_relevance"],
             "summary": meta["summary"],
@@ -1407,10 +1584,17 @@ def register_tools(mcp):
         Compact metadata for every artifact in a project (no contents).
 
         Intended to be the first tool called after generate_server_scaffold.
-        Returns per-file: path, uri, mime_type, size_bytes, sha256, role,
-        customization_relevance, summary, and (for Python files) a symbol
-        list. Use this to plan which artifacts need deeper inspection
-        before spending context on file contents.
+        Returns per-file: path, uri, mime_type, size_bytes, sha256,
+        operational fields (executable, permissions, post_write_actions,
+        line_endings, content_encoding, hash_algorithm), role hints
+        (role, customization_relevance, summary), and — for Python files —
+        the public API surface (symbols with signatures/decorators/
+        docstring summaries, plus an `exports` list).
+
+        The API surface is the materialization contract: it lets an agent
+        import from and call into a scaffold module (e.g. `from
+        mcp_context import with_mcp_context`) without ever pulling the
+        file's bytes into model context.
 
         Args:
             project_id: Project ID from generate_server_scaffold.
@@ -1433,7 +1617,7 @@ def register_tools(mcp):
             meta = build_artifact_metadata(
                 project_id, path,
                 include_symbols=True,
-                include_dependencies=False,
+                include_imports=False,
             )
             if meta is None:
                 continue
@@ -1453,9 +1637,12 @@ def register_tools(mcp):
         Detailed metadata for a single artifact (no file contents).
 
         Returns the same fields as list_scaffold_artifact_metadata plus,
-        for Python files, a `dependencies` list (top-level imports) and
-        richer symbol entries with line hints. Use this before deciding
-        to read the full file via resources/read.
+        for Python files, an `imports` list (top-level module imports).
+        The `symbols` entries carry full AST-extracted signatures,
+        decorators, docstring summaries, and — for classes — public
+        methods with the same detail. Use this before deciding to read
+        the full file: for most customization work, the API surface here
+        is enough to write calling code without loading the file.
 
         Args:
             project_id: Project ID from generate_server_scaffold.
@@ -1464,7 +1651,7 @@ def register_tools(mcp):
         meta = build_artifact_metadata(
             project_id, path,
             include_symbols=True,
-            include_dependencies=True,
+            include_imports=True,
         )
         if meta is None:
             available = artifact_store.list_project(project_id)
