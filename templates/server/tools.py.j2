@@ -29,7 +29,16 @@ CHARACTER_LIMIT = 25000  # Maximum response size for LLM context
 # ============================================================================
 
 def truncate_response(response: str, limit: int = CHARACTER_LIMIT) -> str:
-    """Truncate response to fit within character limit."""
+    """Truncate a response string to fit within a character limit.
+
+    Args:
+        response: Response text to trim before returning to the caller.
+        limit: Maximum character count for the returned string.
+
+    Returns:
+        Original response when under the limit, otherwise the response
+        truncated with an appended notice indicating the truncation.
+    """
     if len(response) <= limit:
         return response
 
