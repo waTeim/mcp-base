@@ -615,14 +615,7 @@ def _classify_usage_role(
     if name.endswith("_impl"):
         return "admin_operation" if name.startswith("admin_") else "tool_implementation"
 
-    _FRAMEWORK_ROLES = {
-        "mcp_context",
-        "auth_provider",
-        "auth_oidc",
-        "user_hash",
-        "prompt_registry",
-    }
-    if file_role in _FRAMEWORK_ROLES:
+    if file_role in _FRAMEWORK_FILE_ROLES:
         return "context_adapter"
 
     return "helper"
@@ -668,31 +661,76 @@ def _derive_required_context(deps: List[str], signature: str) -> List[str]:
 def _intended_usage(usage_role: str) -> str:
     return {
         "tool_implementation": (
-            "Implementation function invoked through MCP tool registration. "
-            "Not usually imported directly outside register_tools()."
+            "Internal implementation invoked through MCP tool registration. "
+            "Do not import directly; invoke through the registered tool."
         ),
         "tool_registration": (
-            "Called once at server startup from the entrypoint to register "
-            "tools on the FastMCP instance. Modify to expose new tools."
+            "Import and call once from the server entrypoint at startup to "
+            "register tools on the FastMCP instance. Modify to expose new tools."
         ),
         "resource_registration": (
-            "Called once at server startup to register MCP resources. "
-            "Modify to add project-specific resources."
+            "Import and call once from the server entrypoint at startup to "
+            "register MCP resources. Modify to add project-specific resources."
         ),
         "prompt_registration": (
-            "Called once at server startup to register MCP prompts from "
-            "the prompt registry."
+            "Import and call once from the server entrypoint at startup to "
+            "register MCP prompts from the prompt registry."
         ),
-        "helper": "Utility function — safe to call directly from other code.",
+        "helper": (
+            "Module-level utility. Import and call directly from other code "
+            "in this module or from new tool implementations."
+        ),
         "context_adapter": (
-            "Framework-level adapter copied as-is from mcp-base. "
-            "Typically not modified."
+            "Framework adapter copied as-is from mcp-base. Do not modify or "
+            "re-implement; treat as opaque infrastructure."
         ),
         "admin_operation": (
-            "Privileged admin-only operation exposed through MCP. "
-            "Gated by authentication; invoke through the registered tool."
+            "Internal admin implementation invoked through MCP tool registration. "
+            "Do not import directly; invoke through the registered admin tool."
         ),
-    }.get(usage_role, "Standard Python symbol; consult docstring.")
+    }.get(usage_role, "Standard Python symbol; consult docstring before use.")
+
+
+_FRAMEWORK_FILE_ROLES = {
+    "mcp_context",
+    "auth_provider",
+    "auth_oidc",
+    "user_hash",
+    "prompt_registry",
+}
+
+
+def _derive_api_status(
+    is_placeholder: bool,
+    file_role: str,
+    usage_role: str,
+) -> str:
+    """Export intended visibility. Values:
+      - scaffold_placeholder: example/seed code meant to be replaced
+      - framework_internal:   copied-from-mcp-base infra, treat as opaque
+      - internal:             implementation detail of this module
+      - public:               meant to be imported or wired up by user code
+    """
+    if is_placeholder:
+        return "scaffold_placeholder"
+    if file_role in _FRAMEWORK_FILE_ROLES:
+        return "framework_internal"
+    if usage_role in ("tool_implementation", "admin_operation"):
+        return "internal"
+    return "public"
+
+
+def _derive_opacity(api_status: str) -> str:
+    """Express whether the symbol should be treated as opaque.
+      - opaque:                     ignore unless replacing/removing
+      - inspect_if_modifying_module: read only when editing this module
+      - intended_for_direct_use:    import/call freely
+    """
+    if api_status in ("scaffold_placeholder", "framework_internal"):
+        return "opaque"
+    if api_status == "internal":
+        return "inspect_if_modifying_module"
+    return "intended_for_direct_use"
 
 
 _PLACEHOLDER_NAME_PREFIXES = ("example_", "TestExample")
@@ -788,6 +826,9 @@ def _function_record(
     required_context = _derive_required_context(depends_on, signature)
     side_effects = _detect_side_effects(node)
     intended_usage = _intended_usage(usage_role)
+    is_placeholder = _is_placeholder_symbol(node.name, file_role)
+    api_status = _derive_api_status(is_placeholder, file_role, usage_role)
+    opacity = _derive_opacity(api_status)
 
     rec: Dict[str, Any] = {
         "name": node.name,
@@ -801,10 +842,12 @@ def _function_record(
         "raises": doc["raises"],
         "side_effects": side_effects,
         "usage_role": usage_role,
+        "api_status": api_status,
+        "opacity": opacity,
         "depends_on": depends_on,
         "required_context": required_context,
         "intended_usage": intended_usage,
-        "is_placeholder": _is_placeholder_symbol(node.name, file_role),
+        "is_placeholder": is_placeholder,
     }
     if exposed_as is not None:
         rec["exposed_as"] = exposed_as
@@ -839,6 +882,10 @@ def _class_record(
         file_role=file_role,
     )
 
+    is_placeholder = _is_placeholder_symbol(node.name, file_role)
+    api_status = _derive_api_status(is_placeholder, file_role, usage_role)
+    opacity = _derive_opacity(api_status)
+
     return {
         "name": node.name,
         "kind": "class",
@@ -849,8 +896,10 @@ def _class_record(
         "parameter_docs": doc_sections["parameter_docs"],
         "raises": doc_sections["raises"],
         "usage_role": usage_role,
+        "api_status": api_status,
+        "opacity": opacity,
         "intended_usage": _intended_usage(usage_role),
-        "is_placeholder": _is_placeholder_symbol(node.name, file_role),
+        "is_placeholder": is_placeholder,
         "methods": methods,
     }
 
