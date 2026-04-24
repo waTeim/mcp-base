@@ -401,100 +401,531 @@ def _decorators(node: ast.AST) -> List[str]:
     return [_unparse(d) for d in dec_list if d is not None]
 
 
+# ----- Docstring section parsing -----------------------------------------
+#
+# Google-style section parser. Handles:
+#   Args:
+#       ctx: MCP context with user information
+#       name (str): Name to greet
+#   Returns:
+#       Formatted string response.
+#   Raises:
+#       ValueError: ...
+
+_SECTION_HEADERS = {
+    "args": "args",
+    "arguments": "args",
+    "parameters": "args",
+    "returns": "returns",
+    "return": "returns",
+    "yields": "returns",
+    "yield": "returns",
+    "raises": "raises",
+    "raise": "raises",
+    "exceptions": "raises",
+    "except": "raises",
+}
+
+_PARAM_RE = re.compile(r"^([A-Za-z_]\w*)\s*(?:\([^)]+\))?\s*:\s*(.*)$")
+_RAISES_RE = re.compile(r"^([A-Za-z_][\w.]*)\s*:\s*(.*)$")
+
+
+def _parse_docstring_sections(docstring: Optional[str]) -> Dict[str, Any]:
+    """Parse a Google-style docstring into summary, args, returns, raises."""
+    if not docstring:
+        return {"summary": "", "parameter_docs": {}, "returns_doc": "", "raises": []}
+
+    lines = docstring.strip().splitlines()
+    summary_lines: List[str] = []
+    rest_start = len(lines)
+    for i, line in enumerate(lines):
+        if not line.strip():
+            rest_start = i + 1
+            break
+        summary_lines.append(line.strip())
+    summary = " ".join(summary_lines).strip()
+
+    parameter_docs: Dict[str, str] = {}
+    returns_doc_parts: List[str] = []
+    raises: List[str] = []
+
+    current_section: Optional[str] = None
+    current_param: Optional[str] = None
+    current_buf: List[str] = []
+
+    def flush_param() -> None:
+        nonlocal current_param, current_buf
+        if current_param is not None:
+            text = " ".join(p.strip() for p in current_buf if p.strip()).strip()
+            if text:
+                parameter_docs[current_param] = text
+        current_param = None
+        current_buf = []
+
+    for line in lines[rest_start:]:
+        stripped = line.strip()
+        low = stripped.lower().rstrip(":")
+        if low in _SECTION_HEADERS and stripped.endswith(":"):
+            flush_param()
+            current_section = _SECTION_HEADERS[low]
+            continue
+
+        if current_section == "args":
+            m = _PARAM_RE.match(stripped)
+            if m:
+                flush_param()
+                current_param = m.group(1)
+                current_buf = [m.group(2)]
+            elif current_param is not None and stripped:
+                current_buf.append(stripped)
+        elif current_section == "returns":
+            if stripped:
+                returns_doc_parts.append(stripped)
+        elif current_section == "raises":
+            m = _RAISES_RE.match(stripped)
+            if m:
+                name = m.group(1)
+                if name and name not in raises:
+                    raises.append(name)
+
+    flush_param()
+
+    return {
+        "summary": summary,
+        "parameter_docs": parameter_docs,
+        "returns_doc": " ".join(returns_doc_parts).strip(),
+        "raises": raises,
+    }
+
+
+# ----- Exposure + usage-role classification ------------------------------
+
+_REGISTER_NAMES = {
+    "register_tools": "tool_registration",
+    "register_resources": "resource_registration",
+    "register_prompts": "prompt_registration",
+}
+
+_MCP_DECORATOR_RE = re.compile(r"^mcp\.(tool|resource|prompt)\b")
+
+
+def _detect_exposed_as(decorators: List[str]) -> Optional[Dict[str, str]]:
+    """Detect @mcp.tool / @mcp.resource / @mcp.prompt decorators."""
+    for raw in decorators:
+        d = raw.strip()
+        m = _MCP_DECORATOR_RE.match(d)
+        if not m:
+            continue
+        kind = m.group(1)
+        paren_open = d.find("(")
+        inner = d[paren_open + 1 : d.rfind(")")] if paren_open != -1 else ""
+        name_m = re.search(r"""name\s*=\s*['"]([^'"]+)['"]""", inner)
+        if kind == "tool":
+            return {"kind": "tool", "name": name_m.group(1) if name_m else ""}
+        if kind == "prompt":
+            return {"kind": "prompt", "name": name_m.group(1) if name_m else ""}
+        if kind == "resource":
+            uri_m = re.search(r"""['"]([^'"]+)['"]""", inner)
+            return {"kind": "resource", "uri": uri_m.group(1) if uri_m else ""}
+    return None
+
+
+def _classify_usage_role(
+    name: str,
+    decorators: List[str],
+    exposed_as: Optional[Dict[str, str]],
+    is_class: bool,
+    file_role: str,
+) -> str:
+    """Assign a usage_role tag to a symbol."""
+    if exposed_as is not None:
+        return {
+            "tool": "tool_registration",
+            "resource": "resource_registration",
+            "prompt": "prompt_registration",
+        }[exposed_as["kind"]]
+
+    low = [d.lower() for d in decorators]
+    if any("with_mcp_context" in d for d in low):
+        return "admin_operation" if name.startswith("admin_") else "tool_implementation"
+
+    if name in _REGISTER_NAMES:
+        return _REGISTER_NAMES[name]
+
+    if name.endswith("_impl"):
+        return "admin_operation" if name.startswith("admin_") else "tool_implementation"
+
+    _FRAMEWORK_ROLES = {
+        "mcp_context",
+        "auth_provider",
+        "auth_oidc",
+        "user_hash",
+        "prompt_registry",
+    }
+    if file_role in _FRAMEWORK_ROLES:
+        return "context_adapter"
+
+    return "helper"
+
+
+def _derive_depends_on(
+    decorators: List[str],
+    signature: str,
+    imports_seen: List[str],
+) -> List[str]:
+    deps: List[str] = []
+    for d in decorators:
+        if "with_mcp_context" in d:
+            deps.append("with_mcp_context")
+    if "MCPContext" in signature:
+        deps.append("MCPContext")
+    if "fastmcp.Context" in signature or re.search(r"\bContext\b", signature) and not deps:
+        # FastMCP request Context parameter
+        if "ctx: Context" in signature or "ctx=Context" in signature or "Context = None" in signature:
+            deps.append("fastmcp.Context")
+    for mod in ("prompt_registry", "auth_fastmcp", "auth_oidc"):
+        if mod in imports_seen and mod not in deps:
+            # Only tag if caller actually references the module in this symbol.
+            # Module-level imports already indicate potential dependency;
+            # per-symbol precision requires body inspection (kept light).
+            pass
+    seen: Dict[str, None] = {}
+    for d in deps:
+        if d not in seen:
+            seen[d] = None
+    return list(seen.keys())
+
+
+def _derive_required_context(deps: List[str], signature: str) -> List[str]:
+    ctx: List[str] = []
+    if "with_mcp_context" in deps or "MCPContext" in deps:
+        ctx.append("authenticated MCP request context (user claims from JWT)")
+    elif "fastmcp.Context" in deps or "Context = None" in signature:
+        ctx.append("FastMCP request Context")
+    return ctx
+
+
+def _intended_usage(usage_role: str) -> str:
+    return {
+        "tool_implementation": (
+            "Implementation function invoked through MCP tool registration. "
+            "Not usually imported directly outside register_tools()."
+        ),
+        "tool_registration": (
+            "Called once at server startup from the entrypoint to register "
+            "tools on the FastMCP instance. Modify to expose new tools."
+        ),
+        "resource_registration": (
+            "Called once at server startup to register MCP resources. "
+            "Modify to add project-specific resources."
+        ),
+        "prompt_registration": (
+            "Called once at server startup to register MCP prompts from "
+            "the prompt registry."
+        ),
+        "helper": "Utility function — safe to call directly from other code.",
+        "context_adapter": (
+            "Framework-level adapter copied as-is from mcp-base. "
+            "Typically not modified."
+        ),
+        "admin_operation": (
+            "Privileged admin-only operation exposed through MCP. "
+            "Gated by authentication; invoke through the registered tool."
+        ),
+    }.get(usage_role, "Standard Python symbol; consult docstring.")
+
+
+def _detect_side_effects(func_node: ast.AST) -> List[str]:
+    """Body-walk for common side-effect patterns."""
+    effects: set = set()
+    for n in ast.walk(func_node):
+        if isinstance(n, ast.Call):
+            fn_src = _unparse(n.func)
+            if not fn_src:
+                continue
+            if fn_src.endswith(".info") or fn_src.endswith(".warning") or fn_src.endswith(".error"):
+                if fn_src.startswith("logger.") or "ctx" in fn_src:
+                    effects.add("writes log/context messages")
+            if "reload_prompt_registry" in fn_src:
+                effects.add("reloads prompt registry from ConfigMap")
+            if fn_src.startswith("asyncio.to_thread"):
+                effects.add("runs blocking I/O on a worker thread")
+            if fn_src.startswith("os.getenv") or fn_src.startswith("os.environ"):
+                effects.add("reads environment variables")
+            if fn_src.startswith("open(") or fn_src == "open":
+                effects.add("reads/writes local files")
+            if fn_src.startswith("httpx.") or fn_src.startswith("requests."):
+                effects.add("performs outbound HTTP requests")
+        elif isinstance(n, ast.Raise):
+            effects.add("raises exceptions on error paths")
+        elif isinstance(n, ast.Attribute):
+            src = _unparse(n)
+            if src.startswith("os.environ"):
+                effects.add("reads environment variables")
+    return sorted(effects)
+
+
 def _is_public(name: str) -> bool:
     return bool(name) and not name.startswith("_")
 
 
-def _function_record(node: ast.AST, kind_override: Optional[str] = None) -> Dict[str, Any]:
+def _function_record(
+    node: ast.AST,
+    *,
+    kind_override: Optional[str] = None,
+    file_role: str = "other",
+    imports_seen: Optional[List[str]] = None,
+    is_class_member: bool = False,
+) -> Dict[str, Any]:
+    """Build an enriched symbol record for a function/method node."""
     is_async = isinstance(node, ast.AsyncFunctionDef)
-    kind = kind_override or ("async_function" if is_async else "function")
-    return {
+    default_kind = "async_function" if is_async else "function"
+    if is_class_member:
+        default_kind = "async_method" if is_async else "method"
+    kind = kind_override or default_kind
+
+    decorators = _decorators(node)
+    signature = _format_signature(node)
+    exposed_as = _detect_exposed_as(decorators)
+    doc = _parse_docstring_sections(ast.get_docstring(node))
+    usage_role = _classify_usage_role(
+        name=node.name,
+        decorators=decorators,
+        exposed_as=exposed_as,
+        is_class=False,
+        file_role=file_role,
+    )
+    depends_on = _derive_depends_on(decorators, signature, imports_seen or [])
+    required_context = _derive_required_context(depends_on, signature)
+    side_effects = _detect_side_effects(node)
+    intended_usage = _intended_usage(usage_role)
+
+    rec: Dict[str, Any] = {
         "name": node.name,
         "kind": kind,
         "line_hint": node.lineno,
-        "signature": _format_signature(node),
-        "decorators": _decorators(node),
-        "summary": _docstring_summary(node),
+        "signature": signature,
+        "decorators": decorators,
+        "summary": doc["summary"] or _docstring_summary(node),
+        "parameter_docs": doc["parameter_docs"],
+        "returns_doc": doc["returns_doc"],
+        "raises": doc["raises"],
+        "side_effects": side_effects,
+        "usage_role": usage_role,
+        "depends_on": depends_on,
+        "required_context": required_context,
+        "intended_usage": intended_usage,
     }
+    if exposed_as is not None:
+        rec["exposed_as"] = exposed_as
+    return rec
 
 
-def _class_record(node: ast.ClassDef) -> Dict[str, Any]:
+def _class_record(
+    node: ast.ClassDef,
+    *,
+    file_role: str = "other",
+    imports_seen: Optional[List[str]] = None,
+) -> Dict[str, Any]:
     methods: List[Dict[str, Any]] = []
     for item in node.body:
         if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            # Include public methods plus __init__ (the primary constructor
-            # contract the agent must call into).
+            # Public methods + __init__ (the constructor contract).
             if _is_public(item.name) or item.name == "__init__":
-                methods.append(_function_record(item, kind_override=(
-                    "async_method" if isinstance(item, ast.AsyncFunctionDef) else "method"
-                )))
+                methods.append(_function_record(
+                    item,
+                    file_role=file_role,
+                    imports_seen=imports_seen,
+                    is_class_member=True,
+                ))
+
+    decorators = _decorators(node)
+    doc_sections = _parse_docstring_sections(ast.get_docstring(node))
+    usage_role = _classify_usage_role(
+        name=node.name,
+        decorators=decorators,
+        exposed_as=None,
+        is_class=True,
+        file_role=file_role,
+    )
+
     return {
         "name": node.name,
         "kind": "class",
         "line_hint": node.lineno,
-        "decorators": _decorators(node),
+        "decorators": decorators,
         "base_classes": [_unparse(b) for b in (node.bases or []) if b is not None],
-        "summary": _docstring_summary(node),
+        "summary": doc_sections["summary"] or _docstring_summary(node),
+        "parameter_docs": doc_sections["parameter_docs"],
+        "raises": doc_sections["raises"],
+        "usage_role": usage_role,
+        "intended_usage": _intended_usage(usage_role),
         "methods": methods,
+    }
+
+
+def _walk_registered_surface(
+    register_node: ast.AST,
+    *,
+    file_role: str,
+    imports_seen: List[str],
+) -> List[Dict[str, Any]]:
+    """Find @mcp.tool / @mcp.resource / @mcp.prompt decorated functions
+    nested inside a register_* function and surface them as top-level
+    registered_surface entries.
+    """
+    registered: List[Dict[str, Any]] = []
+    parent_name = getattr(register_node, "name", "")
+    for node in ast.walk(register_node):
+        if node is register_node:
+            continue
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        decs = _decorators(node)
+        exposed = _detect_exposed_as(decs)
+        if exposed is None:
+            continue
+        rec = _function_record(
+            node,
+            file_role=file_role,
+            imports_seen=imports_seen,
+        )
+        rec["parent"] = parent_name
+        registered.append(rec)
+    return registered
+
+
+_KNOWN_RUNTIME_DEPS = {
+    "fastmcp": "FastMCP framework",
+    "mcp_context": "MCPContext / with_mcp_context",
+    "prompt_registry": "PromptRegistry (ConfigMap-backed, hot-reload)",
+    "auth_fastmcp": "FastMCP auth provider factory",
+    "auth_oidc": "Generic OIDC middleware",
+    "user_hash": "User ID hashing utilities",
+    "artifact_store": "Scaffold artifact store (mcp-base internal)",
+    "redis": "Redis session store",
+    "kubernetes": "Kubernetes API client",
+    "httpx": "HTTP client (outbound)",
+    "jinja2": "Jinja2 templating",
+    "pydantic": "Pydantic validation",
+    "yaml": "YAML parsing",
+}
+
+
+def _derive_module_flags(
+    symbols: List[Dict[str, Any]],
+    registered_surface: List[Dict[str, Any]],
+    role_meta: Dict[str, Any],
+    imports: List[str],
+) -> Dict[str, Any]:
+    has_registration = any(
+        s.get("usage_role", "").endswith("_registration") for s in symbols
+    )
+    has_impl = any(
+        s.get("usage_role") in ("tool_implementation", "admin_operation")
+        for s in symbols
+    ) or bool(registered_surface)
+    has_helpers = any(s.get("usage_role") == "helper" for s in symbols)
+
+    runtime_deps = [
+        _KNOWN_RUNTIME_DEPS[imp] for imp in imports if imp in _KNOWN_RUNTIME_DEPS
+    ]
+
+    return {
+        "contains_business_logic": has_impl,
+        "contains_registration": has_registration,
+        "contains_helpers": has_helpers,
+        "primary_customization_surface": role_meta.get("customization_relevance") == "high",
+        "runtime_dependencies": runtime_deps,
     }
 
 
 def _extract_python_api(
     content: str,
+    *,
+    file_role: str = "other",
     max_symbols: int = 40,
     max_imports: int = 40,
 ) -> Dict[str, Any]:
     """
-    AST-extract the public API surface of a Python source file.
+    AST-extract the API surface of a Python source file.
 
     Returns a dict with:
-      - symbols: list of top-level public function/class records (signatures,
-                 decorators, docstring summaries, methods for classes)
-      - exports: list of public top-level symbol names
-      - imports: list of deduplicated top-level module imports
+      - symbols: top-level public function/class records with full contract
+                 metadata (signature, decorators, parameter_docs, returns_doc,
+                 raises, side_effects, usage_role, depends_on, required_context,
+                 intended_usage, exposed_as, methods for classes)
+      - exports: public top-level symbol names
+      - imports: deduplicated top-level module imports
+      - registered_surface: @mcp.tool / @mcp.resource / @mcp.prompt handlers
+                 nested inside register_* functions (MCP runtime surface)
 
     On SyntaxError, returns an empty structure rather than raising — the
-    scaffold's stored bytes are still authoritative even if our metadata
-    extractor can't parse them.
+    scaffold's stored bytes remain authoritative even if extraction fails.
     """
     try:
         tree = ast.parse(content)
     except SyntaxError:
-        return {"symbols": [], "exports": [], "imports": []}
+        return {
+            "symbols": [],
+            "exports": [],
+            "imports": [],
+            "registered_surface": [],
+        }
 
+    # Pass 1: collect imports so per-symbol records can reason about deps.
+    seen_imports: Dict[str, None] = {}
+    for node in tree.body:
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                top = alias.name.split(".", 1)[0]
+                if top not in seen_imports and len(seen_imports) < max_imports:
+                    seen_imports[top] = None
+        elif isinstance(node, ast.ImportFrom):
+            if node.module and node.level == 0:
+                top = node.module.split(".", 1)[0]
+                if top not in seen_imports and len(seen_imports) < max_imports:
+                    seen_imports[top] = None
+    imports_list = list(seen_imports.keys())
+
+    # Pass 2: top-level public symbols + nested MCP surface.
     symbols: List[Dict[str, Any]] = []
     exports: List[str] = []
-    seen_imports: Dict[str, None] = {}
+    registered_surface: List[Dict[str, Any]] = []
 
     for node in tree.body:
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             if not _is_public(node.name):
                 continue
             if len(symbols) < max_symbols:
-                symbols.append(_function_record(node))
+                symbols.append(_function_record(
+                    node,
+                    file_role=file_role,
+                    imports_seen=imports_list,
+                ))
                 exports.append(node.name)
+            if isinstance(node, ast.FunctionDef) and node.name in _REGISTER_NAMES:
+                registered_surface.extend(_walk_registered_surface(
+                    node,
+                    file_role=file_role,
+                    imports_seen=imports_list,
+                ))
         elif isinstance(node, ast.ClassDef):
             if not _is_public(node.name):
                 continue
             if len(symbols) < max_symbols:
-                symbols.append(_class_record(node))
+                symbols.append(_class_record(
+                    node,
+                    file_role=file_role,
+                    imports_seen=imports_list,
+                ))
                 exports.append(node.name)
-        elif isinstance(node, ast.Import):
-            for alias in node.names:
-                top = alias.name.split(".", 1)[0]
-                if top not in seen_imports and len(seen_imports) < max_imports:
-                    seen_imports[top] = None
-        elif isinstance(node, ast.ImportFrom):
-            # Only record absolute imports (skip relative `from . import x`).
-            if node.module and node.level == 0:
-                top = node.module.split(".", 1)[0]
-                if top not in seen_imports and len(seen_imports) < max_imports:
-                    seen_imports[top] = None
 
     return {
         "symbols": symbols,
         "exports": exports,
-        "imports": list(seen_imports.keys()),
+        "imports": imports_list,
+        "registered_surface": registered_surface,
     }
 
 
@@ -570,12 +1001,20 @@ def build_artifact_metadata(
     }
 
     if artifact.mime_type == "text/x-python":
-        api = _extract_python_api(artifact.content)
+        api = _extract_python_api(artifact.content, file_role=role_meta.get("role", "other"))
+        module_flags = _derive_module_flags(
+            symbols=api["symbols"],
+            registered_surface=api["registered_surface"],
+            role_meta=role_meta,
+            imports=api["imports"],
+        )
         if include_symbols:
             record["symbols"] = api["symbols"]
             record["exports"] = api["exports"]
+            record["registered_surface"] = api["registered_surface"]
         if include_imports:
             record["imports"] = api["imports"]
+        record.update(module_flags)
 
     return record
 
@@ -1118,11 +1557,19 @@ class TestExampleTool(TestPlugin):
 
     # Build the compact artifacts manifest. Each entry carries URI + digest
     # + operational fields (permissions, post-write actions, line endings)
-    # + role hints so the agent can plan assembly and customization without
-    # reading any file bytes into model context. Python symbol/import
-    # surfaces are NOT included at this level — call
-    # list_scaffold_artifact_metadata or read_scaffold_artifact_metadata
-    # for API-contract details when customization is imminent.
+    # + role hints + module-level flags (contains_business_logic, etc.)
+    # so the agent can plan assembly and customization without reading any
+    # file bytes into model context. Python symbol/import surfaces are NOT
+    # included at this level — call list_scaffold_artifact_metadata or
+    # read_scaffold_artifact_metadata for API-contract details when
+    # customization is imminent.
+    _MODULE_FLAG_KEYS = (
+        "contains_business_logic",
+        "contains_registration",
+        "contains_helpers",
+        "primary_customization_surface",
+        "runtime_dependencies",
+    )
     artifacts_manifest: List[Dict[str, Any]] = []
     for path in sorted(files.keys()):
         meta = build_artifact_metadata(
@@ -1132,7 +1579,7 @@ class TestExampleTool(TestPlugin):
         )
         if meta is None:
             continue
-        artifacts_manifest.append({
+        entry = {
             "path": meta["path"],
             "uri": meta["uri"],
             "mime_type": meta["mime_type"],
@@ -1147,7 +1594,11 @@ class TestExampleTool(TestPlugin):
             "role": meta["role"],
             "customization_relevance": meta["customization_relevance"],
             "summary": meta["summary"],
-        })
+        }
+        for key in _MODULE_FLAG_KEYS:
+            if key in meta:
+                entry[key] = meta[key]
+        artifacts_manifest.append(entry)
 
     result = {
         "project_id": project_id,
@@ -1584,12 +2035,34 @@ def register_tools(mcp):
         Compact metadata for every artifact in a project (no contents).
 
         Intended to be the first tool called after generate_server_scaffold.
-        Returns per-file: path, uri, mime_type, size_bytes, sha256,
-        operational fields (executable, permissions, post_write_actions,
-        line_endings, content_encoding, hash_algorithm), role hints
-        (role, customization_relevance, summary), and — for Python files —
-        the public API surface (symbols with signatures/decorators/
-        docstring summaries, plus an `exports` list).
+        Returns per-file:
+
+        Universal fields:
+        - path, uri, mime_type, size_bytes, sha256, hash_algorithm
+        - content_encoding, line_endings, executable, permissions,
+          post_write_actions
+        - role, customization_relevance, summary,
+          customization_notes, verification_notes
+
+        Python-only module-level fields:
+        - contains_business_logic, contains_registration, contains_helpers
+        - primary_customization_surface
+        - runtime_dependencies (human-readable list derived from imports)
+        - exports (public top-level names)
+        - registered_surface (functions decorated with @mcp.tool /
+          @mcp.resource / @mcp.prompt inside register_* — the MCP runtime
+          surface, lifted to module level for easy discovery)
+
+        Python-only per-symbol fields (on each entry in `symbols`):
+        - signature, decorators, line_hint, kind
+        - summary, parameter_docs, returns_doc, raises, side_effects
+        - usage_role (tool_implementation / tool_registration /
+          resource_registration / prompt_registration / helper /
+          context_adapter / admin_operation)
+        - depends_on, required_context, intended_usage
+        - exposed_as ({kind: tool|resource|prompt, name|uri: ...}) when
+          the symbol is decorated for MCP exposure
+        - methods (for classes) — same shape as top-level symbols
 
         The API surface is the materialization contract: it lets an agent
         import from and call into a scaffold module (e.g. `from
@@ -1636,13 +2109,34 @@ def register_tools(mcp):
         """
         Detailed metadata for a single artifact (no file contents).
 
-        Returns the same fields as list_scaffold_artifact_metadata plus,
-        for Python files, an `imports` list (top-level module imports).
-        The `symbols` entries carry full AST-extracted signatures,
-        decorators, docstring summaries, and — for classes — public
-        methods with the same detail. Use this before deciding to read
-        the full file: for most customization work, the API surface here
-        is enough to write calling code without loading the file.
+        Returns the same shape as list_scaffold_artifact_metadata plus,
+        for Python files, an `imports` list (deduplicated top-level
+        module imports). Every `symbols` entry carries the full
+        materialization contract:
+
+        - signature (full Python signature incl. defaults and annotations)
+        - decorators, line_hint, summary
+        - parameter_docs (per-arg prose from the docstring)
+        - returns_doc (what the function returns conceptually)
+        - raises (exception types declared in the docstring)
+        - side_effects (detected from the body: logs, prompt reloads,
+          blocking I/O, env reads, outbound HTTP, raises)
+        - usage_role (tool_implementation vs tool_registration vs helper
+          vs context_adapter vs admin_operation etc.)
+        - depends_on (decorators and context types the symbol needs)
+        - required_context (e.g. authenticated MCP request context)
+        - intended_usage (how to invoke vs avoid)
+        - exposed_as ({kind: tool|resource|prompt, name|uri}) when the
+          symbol is decorated for MCP exposure
+        - methods (classes) — same detail per method
+
+        Module-level fields describe the file as a whole:
+        contains_business_logic, contains_registration, contains_helpers,
+        primary_customization_surface, runtime_dependencies,
+        registered_surface, exports, imports.
+
+        For most customization work, this metadata is enough to write
+        calling code without loading the file bytes.
 
         Args:
             project_id: Project ID from generate_server_scaffold.
