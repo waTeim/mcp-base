@@ -116,7 +116,7 @@ _ROLE_RULES = [
     (re.compile(rf"^src/{_PY_NAME}_tools\.py$"), {
         "role": "tools_module",
         "customization_relevance": "high",
-        "summary": "Shared tool / resource / prompt registration — primary customization surface.",
+        "summary": "Primary MCP customization module. Contains helper utilities, internal tool implementations (with_mcp_context decorated), and register_tools/register_resources/register_prompts glue.",
         "customization_notes": [
             "Add your tool implementations here using the @with_mcp_context pattern.",
             "Register new resources/prompts in register_resources / register_prompts.",
@@ -709,7 +709,11 @@ def _derive_api_status(
       - scaffold_placeholder: example/seed code meant to be replaced
       - framework_internal:   copied-from-mcp-base infra, treat as opaque
       - internal:             implementation detail of this module
+      - module_public:        callable directly, but scoped to this module's
+                              own code (helpers / local utilities) — not a
+                              cross-module external API
       - public:               meant to be imported or wired up by user code
+                              from outside this module (registration glue)
     """
     if is_placeholder:
         return "scaffold_placeholder"
@@ -717,6 +721,8 @@ def _derive_api_status(
         return "framework_internal"
     if usage_role in ("tool_implementation", "admin_operation"):
         return "internal"
+    if usage_role == "helper":
+        return "module_public"
     return "public"
 
 
@@ -796,6 +802,52 @@ def _is_public(name: str) -> bool:
     return bool(name) and not name.startswith("_")
 
 
+def _enrich_parameter_docs(
+    parameter_docs: Dict[str, str],
+    signature: str,
+    decorators: List[str],
+) -> Dict[str, str]:
+    """Fill obvious ctx parameter docs from signature/decorator context.
+
+    Only fills when the signal is unambiguous — when the agent could
+    read it off the signature anyway. Leaves non-obvious parameters
+    (domain-specific names like `cluster_name`, `namespace`) untouched.
+    """
+    if "ctx" in parameter_docs and parameter_docs["ctx"]:
+        return parameter_docs
+    if "ctx" not in signature:
+        return parameter_docs
+    has_with_mcp_context = any("with_mcp_context" in d for d in decorators)
+    if has_with_mcp_context or "MCPContext" in signature:
+        parameter_docs["ctx"] = (
+            "Authenticated MCP request context with user claims extracted "
+            "from the verified JWT (sub, preferred_username, email, ...)."
+        )
+    elif "Context = None" in signature or "ctx: Context" in signature:
+        parameter_docs["ctx"] = (
+            "FastMCP request Context injected by the runtime; used for "
+            "logging and progress notifications back to the MCP client."
+        )
+    return parameter_docs
+
+
+def _infer_returns_doc(
+    existing: str,
+    signature: str,
+    usage_role: str,
+) -> str:
+    """Synthesize returns_doc only for rigid MCP-exposed patterns where the
+    return shape is fixed by the protocol. Otherwise leave blank.
+    """
+    if existing:
+        return existing
+    if "-> str" not in signature:
+        return ""
+    if usage_role in ("tool_implementation", "admin_operation"):
+        return "Formatted string response returned to the MCP tool caller."
+    return ""
+
+
 def _function_record(
     node: ast.AST,
     *,
@@ -829,6 +881,8 @@ def _function_record(
     is_placeholder = _is_placeholder_symbol(node.name, file_role)
     api_status = _derive_api_status(is_placeholder, file_role, usage_role)
     opacity = _derive_opacity(api_status)
+    parameter_docs = _enrich_parameter_docs(dict(doc["parameter_docs"]), signature, decorators)
+    returns_doc = _infer_returns_doc(doc["returns_doc"], signature, usage_role)
 
     rec: Dict[str, Any] = {
         "name": node.name,
@@ -837,8 +891,8 @@ def _function_record(
         "signature": signature,
         "decorators": decorators,
         "summary": doc["summary"] or _docstring_summary(node),
-        "parameter_docs": doc["parameter_docs"],
-        "returns_doc": doc["returns_doc"],
+        "parameter_docs": parameter_docs,
+        "returns_doc": returns_doc,
         "raises": doc["raises"],
         "side_effects": side_effects,
         "usage_role": usage_role,
