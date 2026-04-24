@@ -232,6 +232,66 @@ _ROLE_RULES = [
         ],
         "verification_notes": [],
     }),
+    (re.compile(r"^chart/templates/deployment\.yaml$"), {
+        "role": "helm_deployment",
+        "customization_relevance": "medium",
+        "summary": "Kubernetes Deployment — pod spec, container image, env, health probes, resource limits.",
+        "customization_notes": [
+            "Drive replicas, image, and env via values.yaml; only edit the template for structural changes.",
+        ],
+        "verification_notes": ["helm template chart/ | kubectl apply --dry-run=client -f -"],
+    }),
+    (re.compile(r"^chart/templates/service\.yaml$"), {
+        "role": "helm_service",
+        "customization_relevance": "low",
+        "summary": "Kubernetes Service exposing the MCP port (plus optional test-sidecar port).",
+        "customization_notes": [
+            "Change port numbers and service type via values.yaml (`service.port`, `service.type`).",
+        ],
+        "verification_notes": [],
+    }),
+    (re.compile(r"^chart/templates/rolebinding\.yaml$"), {
+        "role": "helm_rolebinding",
+        "customization_relevance": "medium",
+        "summary": "RBAC: secrets-management Role/RoleBinding + bindings to configured operator ClusterRoles.",
+        "customization_notes": [
+            "Grant additional cluster roles via `operator_cluster_roles` in generate_server_scaffold or values.yaml.",
+            "Add project-specific Roles here if the MCP tools need namespaced permissions beyond secrets.",
+        ],
+        "verification_notes": [],
+    }),
+    (re.compile(r"^chart/templates/ingress\.yaml$"), {
+        "role": "helm_ingress",
+        "customization_relevance": "medium",
+        "summary": "Ingress for external HTTPS entry; rendered only when `ingress.enabled` is true.",
+        "customization_notes": [
+            "Configure host, class, and TLS via values.yaml `ingress.*`.",
+        ],
+        "verification_notes": [],
+    }),
+    (re.compile(r"^chart/templates/serviceaccount\.yaml$"), {
+        "role": "helm_serviceaccount",
+        "customization_relevance": "low",
+        "summary": "ServiceAccount used by the Deployment; created when `serviceAccount.create` is true.",
+        "customization_notes": [],
+        "verification_notes": [],
+    }),
+    (re.compile(r"^chart/templates/configmap\.yaml$"), {
+        "role": "helm_oidc_configmap",
+        "customization_relevance": "medium",
+        "summary": "OIDC configuration ConfigMap (issuer, audience, required_scopes) rendered from values.yaml.",
+        "customization_notes": [
+            "Adjust auth config via values.yaml `oidc.*`; `required_scopes` drives the scopes advertised on the WWW-Authenticate 401 / PRM endpoint.",
+        ],
+        "verification_notes": [],
+    }),
+    (re.compile(r"^chart/templates/hpa\.yaml$"), {
+        "role": "helm_hpa",
+        "customization_relevance": "low",
+        "summary": "HorizontalPodAutoscaler for the Deployment; rendered only when `autoscaling.enabled` is true.",
+        "customization_notes": [],
+        "verification_notes": [],
+    }),
     (re.compile(r"^chart/templates/.+\.yaml$"), {
         "role": "helm_template",
         "customization_relevance": "low",
@@ -635,6 +695,35 @@ def _intended_usage(usage_role: str) -> str:
     }.get(usage_role, "Standard Python symbol; consult docstring.")
 
 
+_PLACEHOLDER_NAME_PREFIXES = ("example_", "TestExample")
+_PLACEHOLDER_FILE_ROLES = {"test_plugin_example"}
+
+
+def _is_placeholder_symbol(name: str, file_role: str) -> bool:
+    """True when the symbol is a scaffold seed meant to be replaced/copied,
+    not extended in place. Derived from naming convention + file role.
+    """
+    if file_role in _PLACEHOLDER_FILE_ROLES:
+        return True
+    return any(name.startswith(prefix) for prefix in _PLACEHOLDER_NAME_PREFIXES)
+
+
+def _detect_delegates_to(func_node: ast.AST) -> Optional[str]:
+    """If the function awaits an `<name>_impl(...)` call, return that name.
+
+    Captures the standard scaffold pattern where a decorated @mcp.tool
+    handler is a thin wrapper that forwards to a top-level <name>_impl
+    function. Lets us emit an explicit runtime-name ↔ implementation link
+    without the agent reading the file.
+    """
+    for n in ast.walk(func_node):
+        if isinstance(n, ast.Await) and isinstance(n.value, ast.Call):
+            callee = _unparse(n.value.func)
+            if callee.endswith("_impl") and "." not in callee:
+                return callee
+    return None
+
+
 def _detect_side_effects(func_node: ast.AST) -> List[str]:
     """Body-walk for common side-effect patterns."""
     effects: set = set()
@@ -715,6 +804,7 @@ def _function_record(
         "depends_on": depends_on,
         "required_context": required_context,
         "intended_usage": intended_usage,
+        "is_placeholder": _is_placeholder_symbol(node.name, file_role),
     }
     if exposed_as is not None:
         rec["exposed_as"] = exposed_as
@@ -760,6 +850,7 @@ def _class_record(
         "raises": doc_sections["raises"],
         "usage_role": usage_role,
         "intended_usage": _intended_usage(usage_role),
+        "is_placeholder": _is_placeholder_symbol(node.name, file_role),
         "methods": methods,
     }
 
@@ -791,6 +882,9 @@ def _walk_registered_surface(
             imports_seen=imports_seen,
         )
         rec["parent"] = parent_name
+        delegate = _detect_delegates_to(node)
+        if delegate:
+            rec["delegates_to"] = delegate
         registered.append(rec)
     return registered
 
@@ -920,6 +1014,23 @@ def _extract_python_api(
                     imports_seen=imports_list,
                 ))
                 exports.append(node.name)
+
+    # Back-link impls to their MCP exposure. The registered handler
+    # delegates_to a top-level _impl; mirror that as exposed_via on the
+    # impl so the agent can start from either end of the call graph.
+    impl_index = {s["name"]: s for s in symbols}
+    for reg in registered_surface:
+        target = reg.get("delegates_to")
+        if not target or target not in impl_index:
+            continue
+        impl = impl_index[target]
+        exposed_as = reg.get("exposed_as") or {}
+        impl["exposed_via"] = {
+            "handler": reg["name"],
+            "kind": exposed_as.get("kind", ""),
+            **({"name": exposed_as["name"]} if "name" in exposed_as else {}),
+            **({"uri": exposed_as["uri"]} if "uri" in exposed_as else {}),
+        }
 
     return {
         "symbols": symbols,
