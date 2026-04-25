@@ -207,6 +207,16 @@ _ROLE_RULES = [
         ],
         "verification_notes": [],
     }),
+    (re.compile(r"^bin/smoke_test\.py$"), {
+        "role": "smoke_test_script",
+        "customization_relevance": "low",
+        "summary": "Build-time startup smoke test — invokes register_resources/tools/prompts against an in-process FastMCP to catch FastMCP contract violations before deploy.",
+        "customization_notes": [
+            "Run as `python bin/smoke_test.py` in CI before `make push`/`make helm-install`.",
+            "Does not need network, auth credentials, or Kubernetes.",
+        ],
+        "verification_notes": ["python bin/smoke_test.py — expect exit 0."],
+    }),
     (re.compile(r"^chart/Chart\.yaml$"), {
         "role": "helm_chart_metadata",
         "customization_relevance": "low",
@@ -1634,6 +1644,7 @@ async def generate_server_scaffold_impl(
     # Bin scripts (coordinate with Dockerfile/Makefile)
     bin_templates = [
         ("bin/configure-make.py.j2", "bin/configure-make.py"),
+        ("bin/smoke_test.py.j2", "bin/smoke_test.py"),
     ]
 
     # Process template files

@@ -216,6 +216,49 @@ def register_resources(mcp):
 # Prompt Registration
 # ============================================================================
 
+def _build_prompt_handler(registry, prompt_def):
+    # FastMCP rejects prompt handlers that use **kwargs, so we synthesize an
+    # async function with an explicit signature derived from the prompt's
+    # declared arguments. Required arguments come first (no default); optional
+    # arguments default to None and are dropped from the render call when unset.
+    prompt_id = prompt_def.id
+    arg_names = [a.name for a in prompt_def.arguments]
+
+    for name in arg_names:
+        if not name.isidentifier():
+            raise ValueError(
+                f"Prompt '{prompt_id}' argument '{name}' is not a valid Python "
+                "identifier and cannot be used as a FastMCP prompt parameter."
+            )
+
+    required = [a.name for a in prompt_def.arguments if a.required]
+    optional = [a.name for a in prompt_def.arguments if not a.required]
+
+    sig_parts = [f"{n}: str" for n in required] + [f"{n}: str = None" for n in optional]
+    signature_src = ", ".join(sig_parts)
+
+    if arg_names:
+        items = ", ".join(f"{n!r}: {n}" for n in arg_names)
+        args_expr = "{k: v for k, v in {" + items + "}.items() if v is not None}"
+    else:
+        args_expr = "{}"
+
+    src = (
+        f"async def _handler({signature_src}) -> str:\n"
+        f"    rendered, error = _registry.render_prompt(_prompt_id, {args_expr})\n"
+        f"    if error:\n"
+        f"        return 'Error rendering prompt: ' + str(error)\n"
+        f"    return rendered\n"
+    )
+
+    namespace = {"_registry": registry, "_prompt_id": prompt_id}
+    exec(src, namespace)
+    handler = namespace["_handler"]
+    handler.__name__ = prompt_id.replace("-", "_")
+    handler.__doc__ = prompt_def.description
+    return handler
+
+
 def register_prompts(mcp):
     """
     Register all prompts with the MCP server instance.
@@ -234,34 +277,12 @@ def register_prompts(mcp):
     """
     registry = get_prompt_registry()
 
-    # Register each prompt from the registry
     for prompt_def in registry.get_all_prompts():
-        # Build arguments list for FastMCP prompt registration
-        args = []
-        for arg in prompt_def.arguments:
-            args.append({
-                "name": arg.name,
-                "description": arg.description,
-                "required": arg.required
-            })
-
-        # Create the prompt handler dynamically
-        def make_handler(prompt_id: str):
-            """Create a closure to capture prompt_id."""
-            async def handler(**kwargs) -> str:
-                rendered, error = registry.render_prompt(prompt_id, kwargs)
-                if error:
-                    return f"Error rendering prompt: {error}"
-                return rendered
-            return handler
-
-        # Register the prompt with FastMCP
-        # Note: FastMCP uses @mcp.prompt() decorator, but we can also use
-        # the underlying registration mechanism
+        handler = _build_prompt_handler(registry, prompt_def)
         mcp.prompt(
             name=prompt_def.id,
-            description=prompt_def.description
-        )(make_handler(prompt_def.id))
+            description=prompt_def.description,
+        )(handler)
 
     # Register a special prompt for listing available prompts
     @mcp.prompt(name="list-prompts", description="List all available prompts with their descriptions")
