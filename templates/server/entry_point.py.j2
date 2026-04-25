@@ -154,7 +154,7 @@ async def readiness_check(request):
 
 def run_http_transport_auth0(host: str, port: int):
     """Run server in HTTP mode with FastMCP Auth0 OAuth Proxy."""
-    from auth_fastmcp import create_auth0_oauth_proxy, get_auth_config_summary, load_oidc_config_from_file
+    from auth_fastmcp import create_auth0_oauth_proxy, get_auth0_config_summary, load_oidc_config_from_file
 
     logger.info("Initializing FastMCP Auth0 OAuth Proxy...")
 
@@ -169,7 +169,7 @@ def run_http_transport_auth0(host: str, port: int):
     auth_proxy = create_auth0_oauth_proxy()
 
     # Log configuration summary
-    config_summary = get_auth_config_summary(issuer, audience, client_id, public_url)
+    config_summary = get_auth0_config_summary(issuer, audience, client_id, public_url)
     logger.info("=" * 80)
     logger.info("FastMCP Auth0 OAuth Configuration:")
     logger.info("=" * 80)
@@ -238,7 +238,7 @@ def run_http_transport_keycloak(host: str, port: int):
     Client Registration natively (requires Keycloak >= 26.6.0), so no
     client_id/client_secret, JWT signing key, or Redis storage is needed.
     """
-    from auth_fastmcp import create_keycloak_auth_provider, get_auth_config_summary, load_oidc_config_from_file
+    from auth_fastmcp import create_keycloak_auth_provider, get_keycloak_config_summary, load_oidc_config_from_file
 
     logger.info("Initializing FastMCP Keycloak Auth Provider...")
 
@@ -256,7 +256,7 @@ def run_http_transport_keycloak(host: str, port: int):
 
     auth_provider = create_keycloak_auth_provider()
 
-    config_summary = get_auth_config_summary(realm_url.rstrip("/"), audience, public_url)
+    config_summary = get_keycloak_config_summary(realm_url.rstrip("/"), audience, public_url)
     logger.info("=" * 80)
     logger.info("FastMCP Keycloak Configuration:")
     logger.info("=" * 80)
