@@ -148,7 +148,8 @@ class OIDCAuthProvider:
         public_url: Optional[str] = None,
         required_scope: str = "openid",
         config_path: Optional[str] = None,
-        client_secrets: Optional[list] = None
+        client_secrets: Optional[list] = None,
+        resource_path: str = "/mcp",
     ):
         """
         Initialize OIDC authentication provider.
@@ -168,9 +169,14 @@ class OIDCAuthProvider:
             required_scope: Required OAuth2 scope (default: openid)
             config_path: Optional path to OIDC config file (YAML)
             client_secrets: List of client_secrets to try for JWE decryption (Auth0 compatibility)
+            resource_path: HTTP path the MCP transport is mounted at. Used to
+                publish the path-scoped and path-prefixed RFC 9728 / RFC 8615
+                discovery variants that MCP clients probe (e.g. `/mcp`).
         """
         # Try to load from config file first
         config = load_oidc_config_from_file(config_path) or {}
+
+        self.resource_path = "/" + (resource_path or "/mcp").strip("/")
 
         # Priority: explicit params > config file > env vars
         self.issuer = issuer or config.get("issuer") or os.getenv("OIDC_ISSUER")
@@ -1023,12 +1029,15 @@ class OIDCAuthProvider:
                     status_code=500
                 )
 
-        # OAuth Authorization Server metadata (for auth servers like Auth0)
-        routes.append(
-            Route("/.well-known/oauth-authorization-server", oauth_metadata, methods=["GET"])
-        )
+        # OpenID Connect Discovery (1.0) — same payload as oauth-authorization-server.
+        # MCP clients (Codex, Claude Desktop) probe this path even when we are
+        # only an OAuth resource server / proxy. Returning the auth-server
+        # metadata satisfies the discovery contract.
+        async def openid_configuration(request):
+            logger.info(f"📋 OpenID configuration requested from {request.url.path}")
+            return await oauth_metadata(request)
 
-        # Protected Resource metadata endpoint (RFC 8707) - for resource servers (us!)
+        # Protected Resource metadata endpoint (RFC 9728) - for resource servers (us!)
         async def protected_resource_metadata(request):
             """
             OAuth 2.0 Protected Resource Metadata (RFC 8707).
@@ -1062,9 +1071,29 @@ class OIDCAuthProvider:
 
             return JSONResponse(metadata)
 
-        routes.append(
-            Route("/.well-known/oauth-protected-resource", protected_resource_metadata, methods=["GET"])
-        )
+        # MCP clients (Codex, Claude Desktop) probe each discovery spec at
+        # three URL variants — the standard well-known root, the path-suffixed
+        # form (RFC 9728-style resource indicator), and the path-prefixed
+        # form (RFC 8615 §3 well-known under a sub-path). Register every
+        # handler at all three so the client lands on a 200 regardless of
+        # which probe order it uses.
+        resource_path = self.resource_path  # e.g. "/mcp"
+        discovery_specs = [
+            ("oauth-authorization-server", oauth_metadata),
+            ("openid-configuration", openid_configuration),
+            ("oauth-protected-resource", protected_resource_metadata),
+        ]
+        seen_paths = set()
+        for spec, handler in discovery_specs:
+            for path in (
+                f"/.well-known/{spec}",
+                f"/.well-known/{spec}{resource_path}",
+                f"{resource_path}/.well-known/{spec}",
+            ):
+                if path in seen_paths:
+                    continue
+                seen_paths.add(path)
+                routes.append(Route(path, handler, methods=["GET"]))
 
         # Add DCR endpoint if configured
         if self.upstream_dcr_endpoint:

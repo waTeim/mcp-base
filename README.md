@@ -77,20 +77,46 @@ Resources return template content or documentation as strings. Reading them crea
 | `template://helm/*` | Helm chart templates (as strings) |
 | `template://container/*` | Docker build templates (as strings) |
 
-### Tools (Scaffold Generation)
+### Tools (Scaffold Generation — Resource-First)
 
-Tools generate scaffold artifacts and return resource references. Use
-`resources/read` with `scaffold://` URIs to retrieve content and write files
-to disk.
+Scaffold retrieval is **resource-first**: bulk file bytes flow through
+MCP resources; tools return only compact coordination metadata. This
+keeps artifact contents out of the model context.
 
-| Tool | Description | Creates Files? |
-|------|-------------|----------------|
-| `generate_server_scaffold` | **Generate complete MCP server project scaffold (artifacts)** | ❌ No - returns artifact references |
-| `list_artifacts` | List all files in a generated project | ❌ No - returns JSON list |
-| `render_template` | Render individual template to string | ⚠️ Returns string - you must write it |
+- **Primary — bulk bytes:**
+  `resources/read("scaffold://{project_id}/{path}")`. Each artifact is
+  registered as a concrete MCP resource at generation time and has
+  `sha256` in the manifest for byte-parity verification.
+- **Primary — coordination metadata:**
+  `list_scaffold_artifact_metadata` and `read_scaffold_artifact_metadata`.
+- **Last-resort fallback only:** `read_scaffold_artifact` returns full
+  contents inside tool output (every byte pulled into model context) and
+  is intended **only** for MCP clients that cannot invoke
+  `resources/read` at all — e.g. OpenAI's `codex_apps` proxy, which
+  forwards only tools and drops resources/prompts entirely. **Do not
+  use this tool if `resources/read` is available.**
+
+| Tool | Description | Puts bytes in model context? |
+|------|-------------|------------------------------|
+| `generate_server_scaffold` | Create project; returns compact manifest (path, uri, sha256, operational fields, role) | ❌ No — no file contents |
+| `list_scaffold_artifact_metadata` | Manifest fields + AST-extracted API surface for every Python file (symbols with signatures/decorators/docstrings, exports) | ❌ No — no file contents |
+| `read_scaffold_artifact_metadata` | Same shape for a single file; adds `imports` | ❌ No — no file contents |
+| `list_artifacts` | Lightweight path + URI listing | ❌ No |
+| `read_scaffold_artifact` | **LAST-RESORT fallback** — full bytes in tool output. Use only when `resources/read` is unavailable (e.g. tool-only proxies like OpenAI's `codex_apps`). | ⚠️ Yes — blows model context on large scaffolds |
+| `render_template` | Render individual template to string | ⚠️ Returns string — **not** a scaffold substitute |
 | `list_templates` | List available templates | ❌ No |
 | `list_patterns` | List pattern documentation | ❌ No |
 | `get_pattern` | Get specific pattern docs | ❌ No |
+
+### Generated Scaffold Resources
+
+Every generated artifact is available as an MCP resource. Bulk byte
+transfer should go through these, not through tool output:
+
+| URI | Description |
+|-----|-------------|
+| `scaffold://{project_id}/{path}` | Concrete per-artifact resource — appears in `resources/list` |
+| `artifact://{project_id}/{path}` | Alias for legacy clients that captured `artifact://` URIs |
 
 ## Generated Server Structure
 

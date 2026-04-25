@@ -7,15 +7,20 @@ Tools are decorated with @mcp.tool() and follow the standard pattern.
 The mcp instance is passed in via register_tools() to avoid circular imports.
 """
 
+import ast
 import json
+import logging
 import re
 import uuid
 from pathlib import Path
-from typing import Optional, Literal, List, Dict, Any
+from typing import Optional, Literal, List, Dict, Any, Tuple
 
 from jinja2 import Environment, FileSystemLoader, select_autoescape
+from fastmcp.resources import TextResource
 
 from artifact_store import artifact_store, get_mime_type_for_path
+
+logger = logging.getLogger(__name__)
 
 # ============================================================================
 # Path Configuration
@@ -67,6 +72,1175 @@ def to_pascal_case(name: str) -> str:
     """Convert name to PascalCase."""
     parts = re.split(r'[-_\s]+', name)
     return ''.join(word.capitalize() for word in parts)
+
+
+# ============================================================================
+# Artifact Metadata Inference
+# ============================================================================
+#
+# Role/relevance/summary/notes are inferred from the generated file's output
+# path. The inference layer keeps the metadata tools compact — clients can
+# look at role+relevance to decide which artifacts to inspect locally before
+# customizing, without pulling any file bytes into model context.
+
+# Patterns are evaluated in order; the first match wins. Project-specific
+# snake_case tokens in output paths are matched with a loose regex so the
+# same rule covers any server name.
+_PY_NAME = r"[a-z][a-z0-9_]*"
+
+_ROLE_RULES = [
+    # (regex pattern against output path, role metadata dict)
+    (re.compile(rf"^src/{_PY_NAME}_test_server\.py$"), {
+        "role": "test_server",
+        "customization_relevance": "low",
+        "summary": "OIDC test server entrypoint used for automated tests.",
+        "customization_notes": [
+            "Rarely customized. Mirrors the production server but accepts OIDC JWTs directly."
+        ],
+        "verification_notes": [
+            "Run against --no-auth for headless CI when needed.",
+        ],
+    }),
+    (re.compile(rf"^src/{_PY_NAME}_server\.py$"), {
+        "role": "server_entrypoint",
+        "customization_relevance": "medium",
+        "summary": "FastMCP production server entrypoint (transport, auth, route wiring).",
+        "customization_notes": [
+            "Wire additional tool/resource modules via register_*() calls.",
+            "Keep auth middleware initialization aligned with auth_fastmcp.py.",
+        ],
+        "verification_notes": [
+            "python src/<snake>_server.py --port <port> and curl /healthz.",
+        ],
+    }),
+    (re.compile(rf"^src/{_PY_NAME}_tools\.py$"), {
+        "role": "tools_module",
+        "customization_relevance": "high",
+        "summary": "Primary MCP customization module. Contains helper utilities, internal tool implementations (with_mcp_context decorated), and register_tools/register_resources/register_prompts glue.",
+        "customization_notes": [
+            "Add your tool implementations here using the @with_mcp_context pattern.",
+            "Register new resources/prompts in register_resources / register_prompts.",
+        ],
+        "verification_notes": [
+            "Exercise via test/test-mcp.py plugin tests.",
+        ],
+    }),
+    (re.compile(r"^src/auth_fastmcp\.py$"), {
+        "role": "auth_provider",
+        "customization_relevance": "low",
+        "summary": "FastMCP auth provider factory (auth0 / keycloak / oidc dispatch).",
+        "customization_notes": [
+            "Usually untouched. Edit only when switching/adding an auth_type.",
+        ],
+        "verification_notes": [],
+    }),
+    (re.compile(r"^src/auth_oidc\.py$"), {
+        "role": "auth_oidc",
+        "customization_relevance": "none",
+        "summary": "Generic OIDC middleware (copied as-is from mcp-base).",
+        "customization_notes": [
+            "Do not modify. Identical across generated projects.",
+        ],
+        "verification_notes": [],
+    }),
+    (re.compile(r"^src/mcp_context\.py$"), {
+        "role": "mcp_context",
+        "customization_relevance": "none",
+        "summary": "MCPContext dataclass and with_mcp_context decorator (copied as-is).",
+        "customization_notes": ["Do not modify."],
+        "verification_notes": [],
+    }),
+    (re.compile(r"^src/user_hash\.py$"), {
+        "role": "user_hash",
+        "customization_relevance": "none",
+        "summary": "User ID hashing utilities (copied as-is).",
+        "customization_notes": ["Do not modify."],
+        "verification_notes": [],
+    }),
+    (re.compile(r"^src/prompt_registry\.py$"), {
+        "role": "prompt_registry",
+        "customization_relevance": "low",
+        "summary": "Versioned prompt registry with ConfigMap hot-reload.",
+        "customization_notes": [
+            "Usually reused as-is; add prompts in chart/templates/prompts-configmap.yaml.",
+        ],
+        "verification_notes": [],
+    }),
+    (re.compile(r"^Dockerfile$"), {
+        "role": "container_prod",
+        "customization_relevance": "low",
+        "summary": "Production Dockerfile (multi-stage Python build).",
+        "customization_notes": [
+            "Adjust base image / system deps only if your tools require native libraries.",
+        ],
+        "verification_notes": ["docker build -t <image> . && docker run --rm <image>"],
+    }),
+    (re.compile(r"^Dockerfile\.test$"), {
+        "role": "container_test",
+        "customization_relevance": "low",
+        "summary": "Test-mode Dockerfile (no auth) for CI.",
+        "customization_notes": [],
+        "verification_notes": [],
+    }),
+    (re.compile(r"^requirements\.txt$"), {
+        "role": "python_requirements",
+        "customization_relevance": "medium",
+        "summary": "Python dependencies for the server.",
+        "customization_notes": [
+            "Append the packages your tools import (e.g. kubernetes, pydantic models).",
+        ],
+        "verification_notes": ["pip install -r requirements.txt in a fresh venv."],
+    }),
+    (re.compile(r"^Makefile$"), {
+        "role": "build_makefile",
+        "customization_relevance": "low",
+        "summary": "Build automation (build, push, test, helm-install targets).",
+        "customization_notes": ["Run `python bin/configure-make.py` to generate make.env first."],
+        "verification_notes": [],
+    }),
+    (re.compile(r"^bin/configure-make\.py$"), {
+        "role": "config_script",
+        "customization_relevance": "low",
+        "summary": "Generates make.env (registry, image names, namespace) for the Makefile.",
+        "customization_notes": [
+            "Run once before `make build`. Re-run when registry/namespace changes.",
+        ],
+        "verification_notes": [],
+    }),
+    (re.compile(r"^bin/smoke_test\.py$"), {
+        "role": "smoke_test_script",
+        "customization_relevance": "low",
+        "summary": "Build-time startup smoke test — invokes register_resources/tools/prompts against an in-process FastMCP to catch FastMCP contract violations before deploy.",
+        "customization_notes": [
+            "Run as `python bin/smoke_test.py` in CI before `make push`/`make helm-install`.",
+            "Does not need network, auth credentials, or Kubernetes.",
+        ],
+        "verification_notes": ["python bin/smoke_test.py — expect exit 0."],
+    }),
+    (re.compile(r"^chart/Chart\.yaml$"), {
+        "role": "helm_chart_metadata",
+        "customization_relevance": "low",
+        "summary": "Helm chart metadata (name, version, Redis dependency).",
+        "customization_notes": [],
+        "verification_notes": ["helm lint chart/"],
+    }),
+    (re.compile(r"^chart/values\.yaml$"), {
+        "role": "helm_values",
+        "customization_relevance": "medium",
+        "summary": "Default Helm values (image, env, ingress, auth).",
+        "customization_notes": [
+            "Override per-environment via `helm install -f my-values.yaml`.",
+        ],
+        "verification_notes": ["helm template chart/ -f my-values.yaml"],
+    }),
+    (re.compile(r"^chart/templates/prompts-configmap\.yaml$"), {
+        "role": "helm_prompts_configmap",
+        "customization_relevance": "medium",
+        "summary": "ConfigMap backing the hot-reload prompt registry.",
+        "customization_notes": [
+            "Add project-specific prompts here; PromptRegistry will pick them up.",
+        ],
+        "verification_notes": [],
+    }),
+    (re.compile(r"^chart/templates/deployment\.yaml$"), {
+        "role": "helm_deployment",
+        "customization_relevance": "medium",
+        "summary": "Kubernetes Deployment — pod spec, container image, env, health probes, resource limits.",
+        "customization_notes": [
+            "Drive replicas, image, and env via values.yaml; only edit the template for structural changes.",
+        ],
+        "verification_notes": ["helm template chart/ | kubectl apply --dry-run=client -f -"],
+    }),
+    (re.compile(r"^chart/templates/service\.yaml$"), {
+        "role": "helm_service",
+        "customization_relevance": "low",
+        "summary": "Kubernetes Service exposing the MCP port (plus optional test-sidecar port).",
+        "customization_notes": [
+            "Change port numbers and service type via values.yaml (`service.port`, `service.type`).",
+        ],
+        "verification_notes": [],
+    }),
+    (re.compile(r"^chart/templates/rolebinding\.yaml$"), {
+        "role": "helm_rolebinding",
+        "customization_relevance": "medium",
+        "summary": "RBAC: secrets-management Role/RoleBinding + bindings to configured operator ClusterRoles.",
+        "customization_notes": [
+            "Grant additional cluster roles via `operator_cluster_roles` in generate_server_scaffold or values.yaml.",
+            "Add project-specific Roles here if the MCP tools need namespaced permissions beyond secrets.",
+        ],
+        "verification_notes": [],
+    }),
+    (re.compile(r"^chart/templates/ingress\.yaml$"), {
+        "role": "helm_ingress",
+        "customization_relevance": "medium",
+        "summary": "Ingress for external HTTPS entry; rendered only when `ingress.enabled` is true.",
+        "customization_notes": [
+            "Configure host, class, and TLS via values.yaml `ingress.*`.",
+        ],
+        "verification_notes": [],
+    }),
+    (re.compile(r"^chart/templates/serviceaccount\.yaml$"), {
+        "role": "helm_serviceaccount",
+        "customization_relevance": "low",
+        "summary": "ServiceAccount used by the Deployment; created when `serviceAccount.create` is true.",
+        "customization_notes": [],
+        "verification_notes": [],
+    }),
+    (re.compile(r"^chart/templates/configmap\.yaml$"), {
+        "role": "helm_oidc_configmap",
+        "customization_relevance": "medium",
+        "summary": "OIDC configuration ConfigMap (issuer, audience, required_scopes) rendered from values.yaml.",
+        "customization_notes": [
+            "Adjust auth config via values.yaml `oidc.*`; `required_scopes` drives the scopes advertised on the WWW-Authenticate 401 / PRM endpoint.",
+        ],
+        "verification_notes": [],
+    }),
+    (re.compile(r"^chart/templates/hpa\.yaml$"), {
+        "role": "helm_hpa",
+        "customization_relevance": "low",
+        "summary": "HorizontalPodAutoscaler for the Deployment; rendered only when `autoscaling.enabled` is true.",
+        "customization_notes": [],
+        "verification_notes": [],
+    }),
+    (re.compile(r"^chart/templates/.+\.yaml$"), {
+        "role": "helm_template",
+        "customization_relevance": "low",
+        "summary": "Helm template (Kubernetes manifest rendered by chart).",
+        "customization_notes": [],
+        "verification_notes": [],
+    }),
+    (re.compile(r"^chart/templates/NOTES\.txt$"), {
+        "role": "helm_notes",
+        "customization_relevance": "none",
+        "summary": "Post-install NOTES shown to operators.",
+        "customization_notes": [],
+        "verification_notes": [],
+    }),
+    (re.compile(r"^chart/templates/_helpers\.tpl$"), {
+        "role": "helm_helpers",
+        "customization_relevance": "none",
+        "summary": "Helm template helpers.",
+        "customization_notes": [],
+        "verification_notes": [],
+    }),
+    (re.compile(r"^chart/\.helmignore$"), {
+        "role": "helm_ignore",
+        "customization_relevance": "none",
+        "summary": "Patterns excluded from `helm package`.",
+        "customization_notes": [],
+        "verification_notes": [],
+    }),
+    (re.compile(r"^test/test-mcp\.py$"), {
+        "role": "test_runner",
+        "customization_relevance": "low",
+        "summary": "Plugin-based test runner entrypoint.",
+        "customization_notes": [],
+        "verification_notes": ["./test/test-mcp.py --url http://localhost:8001/test --no-auth"],
+    }),
+    (re.compile(r"^test/get-user-token\.py$"), {
+        "role": "test_token_helper",
+        "customization_relevance": "none",
+        "summary": "Interactive helper to acquire an Auth0 user token.",
+        "customization_notes": [],
+        "verification_notes": [],
+    }),
+    (re.compile(r"^test/mcp-auth-proxy\.py$"), {
+        "role": "test_auth_proxy",
+        "customization_relevance": "none",
+        "summary": "Local auth proxy for test sessions.",
+        "customization_notes": [],
+        "verification_notes": [],
+    }),
+    (re.compile(r"^test/plugins/__init__\.py$"), {
+        "role": "test_plugin_base",
+        "customization_relevance": "none",
+        "summary": "TestPlugin/TestResult base classes (copied as-is).",
+        "customization_notes": [],
+        "verification_notes": [],
+    }),
+    (re.compile(r"^test/plugins/test_list_resources\.py$"), {
+        "role": "test_plugin",
+        "customization_relevance": "low",
+        "summary": "Standard plugin: verifies resources/list contents.",
+        "customization_notes": [],
+        "verification_notes": [],
+    }),
+    (re.compile(r"^test/plugins/test_read_resource\.py$"), {
+        "role": "test_plugin",
+        "customization_relevance": "low",
+        "summary": "Standard plugin: verifies resources/read.",
+        "customization_notes": [],
+        "verification_notes": [],
+    }),
+    (re.compile(r"^test/plugins/test_list_prompts\.py$"), {
+        "role": "test_plugin",
+        "customization_relevance": "low",
+        "summary": "Standard plugin: verifies prompts/list.",
+        "customization_notes": [],
+        "verification_notes": [],
+    }),
+    (re.compile(r"^test/plugins/test_example\.py$"), {
+        "role": "test_plugin_example",
+        "customization_relevance": "high",
+        "summary": "Starter test plugin — copy to build plugin tests for your tools.",
+        "customization_notes": [
+            "Rename the class, set tool_name, and fill in the test() body.",
+        ],
+        "verification_notes": [],
+    }),
+]
+
+_DEFAULT_ROLE = {
+    "role": "other",
+    "customization_relevance": "low",
+    "summary": "",
+    "customization_notes": [],
+    "verification_notes": [],
+}
+
+
+def _unparse(node: Optional[ast.AST]) -> str:
+    """Best-effort ast.unparse; returns empty string on failure."""
+    if node is None:
+        return ""
+    try:
+        return ast.unparse(node)
+    except Exception:
+        return ""
+
+
+def _arg_to_str(arg: ast.arg, default: Optional[ast.AST]) -> str:
+    parts = [arg.arg]
+    if arg.annotation is not None:
+        parts.append(": " + _unparse(arg.annotation))
+    if default is not None:
+        parts.append(" = " + _unparse(default))
+    return "".join(parts)
+
+
+def _format_signature(node: ast.AST) -> str:
+    """Build a signature string like `(a: int, b: str = "x") -> bool`."""
+    if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+        return ""
+    args = node.args
+    parts: List[str] = []
+
+    posonly = list(args.posonlyargs or [])
+    regular = list(args.args or [])
+    defaults = list(args.defaults or [])
+    total_pos = len(posonly) + len(regular)
+    # defaults apply to the tail of (posonly + regular)
+    default_start = total_pos - len(defaults)
+    combined = posonly + regular
+    for i, a in enumerate(combined):
+        d = defaults[i - default_start] if i >= default_start else None
+        parts.append(_arg_to_str(a, d))
+        if posonly and i == len(posonly) - 1:
+            parts.append("/")
+
+    if args.vararg is not None:
+        parts.append("*" + _arg_to_str(args.vararg, None))
+    elif args.kwonlyargs:
+        parts.append("*")
+
+    for a, d in zip(args.kwonlyargs or [], args.kw_defaults or []):
+        parts.append(_arg_to_str(a, d))
+
+    if args.kwarg is not None:
+        parts.append("**" + _arg_to_str(args.kwarg, None))
+
+    sig = "(" + ", ".join(parts) + ")"
+    if node.returns is not None:
+        sig += " -> " + _unparse(node.returns)
+    return sig
+
+
+def _docstring_summary(node: ast.AST) -> str:
+    """Return the first line of a node's docstring, or ''."""
+    try:
+        doc = ast.get_docstring(node)
+    except Exception:
+        doc = None
+    if not doc:
+        return ""
+    return doc.strip().splitlines()[0].strip()
+
+
+def _decorators(node: ast.AST) -> List[str]:
+    dec_list = getattr(node, "decorator_list", None) or []
+    return [_unparse(d) for d in dec_list if d is not None]
+
+
+# ----- Docstring section parsing -----------------------------------------
+#
+# Google-style section parser. Handles:
+#   Args:
+#       ctx: MCP context with user information
+#       name (str): Name to greet
+#   Returns:
+#       Formatted string response.
+#   Raises:
+#       ValueError: ...
+
+_SECTION_HEADERS = {
+    "args": "args",
+    "arguments": "args",
+    "parameters": "args",
+    "returns": "returns",
+    "return": "returns",
+    "yields": "returns",
+    "yield": "returns",
+    "raises": "raises",
+    "raise": "raises",
+    "exceptions": "raises",
+    "except": "raises",
+}
+
+_PARAM_RE = re.compile(r"^([A-Za-z_]\w*)\s*(?:\([^)]+\))?\s*:\s*(.*)$")
+_RAISES_RE = re.compile(r"^([A-Za-z_][\w.]*)\s*:\s*(.*)$")
+
+
+def _parse_docstring_sections(docstring: Optional[str]) -> Dict[str, Any]:
+    """Parse a Google-style docstring into summary, args, returns, raises."""
+    if not docstring:
+        return {"summary": "", "parameter_docs": {}, "returns_doc": "", "raises": []}
+
+    lines = docstring.strip().splitlines()
+    summary_lines: List[str] = []
+    rest_start = len(lines)
+    for i, line in enumerate(lines):
+        if not line.strip():
+            rest_start = i + 1
+            break
+        summary_lines.append(line.strip())
+    summary = " ".join(summary_lines).strip()
+
+    parameter_docs: Dict[str, str] = {}
+    returns_doc_parts: List[str] = []
+    raises: List[str] = []
+
+    current_section: Optional[str] = None
+    current_param: Optional[str] = None
+    current_buf: List[str] = []
+
+    def flush_param() -> None:
+        nonlocal current_param, current_buf
+        if current_param is not None:
+            text = " ".join(p.strip() for p in current_buf if p.strip()).strip()
+            if text:
+                parameter_docs[current_param] = text
+        current_param = None
+        current_buf = []
+
+    for line in lines[rest_start:]:
+        stripped = line.strip()
+        low = stripped.lower().rstrip(":")
+        if low in _SECTION_HEADERS and stripped.endswith(":"):
+            flush_param()
+            current_section = _SECTION_HEADERS[low]
+            continue
+
+        if current_section == "args":
+            m = _PARAM_RE.match(stripped)
+            if m:
+                flush_param()
+                current_param = m.group(1)
+                current_buf = [m.group(2)]
+            elif current_param is not None and stripped:
+                current_buf.append(stripped)
+        elif current_section == "returns":
+            if stripped:
+                returns_doc_parts.append(stripped)
+        elif current_section == "raises":
+            m = _RAISES_RE.match(stripped)
+            if m:
+                name = m.group(1)
+                if name and name not in raises:
+                    raises.append(name)
+
+    flush_param()
+
+    return {
+        "summary": summary,
+        "parameter_docs": parameter_docs,
+        "returns_doc": " ".join(returns_doc_parts).strip(),
+        "raises": raises,
+    }
+
+
+# ----- Exposure + usage-role classification ------------------------------
+
+_REGISTER_NAMES = {
+    "register_tools": "tool_registration",
+    "register_resources": "resource_registration",
+    "register_prompts": "prompt_registration",
+}
+
+_MCP_DECORATOR_RE = re.compile(r"^mcp\.(tool|resource|prompt)\b")
+
+
+def _detect_exposed_as(decorators: List[str]) -> Optional[Dict[str, str]]:
+    """Detect @mcp.tool / @mcp.resource / @mcp.prompt decorators."""
+    for raw in decorators:
+        d = raw.strip()
+        m = _MCP_DECORATOR_RE.match(d)
+        if not m:
+            continue
+        kind = m.group(1)
+        paren_open = d.find("(")
+        inner = d[paren_open + 1 : d.rfind(")")] if paren_open != -1 else ""
+        name_m = re.search(r"""name\s*=\s*['"]([^'"]+)['"]""", inner)
+        if kind == "tool":
+            return {"kind": "tool", "name": name_m.group(1) if name_m else ""}
+        if kind == "prompt":
+            return {"kind": "prompt", "name": name_m.group(1) if name_m else ""}
+        if kind == "resource":
+            uri_m = re.search(r"""['"]([^'"]+)['"]""", inner)
+            return {"kind": "resource", "uri": uri_m.group(1) if uri_m else ""}
+    return None
+
+
+def _classify_usage_role(
+    name: str,
+    decorators: List[str],
+    exposed_as: Optional[Dict[str, str]],
+    is_class: bool,
+    file_role: str,
+) -> str:
+    """Assign a usage_role tag to a symbol."""
+    if exposed_as is not None:
+        return {
+            "tool": "tool_registration",
+            "resource": "resource_registration",
+            "prompt": "prompt_registration",
+        }[exposed_as["kind"]]
+
+    low = [d.lower() for d in decorators]
+    if any("with_mcp_context" in d for d in low):
+        return "admin_operation" if name.startswith("admin_") else "tool_implementation"
+
+    if name in _REGISTER_NAMES:
+        return _REGISTER_NAMES[name]
+
+    if name.endswith("_impl"):
+        return "admin_operation" if name.startswith("admin_") else "tool_implementation"
+
+    if file_role in _FRAMEWORK_FILE_ROLES:
+        return "context_adapter"
+
+    return "helper"
+
+
+def _derive_depends_on(
+    decorators: List[str],
+    signature: str,
+    imports_seen: List[str],
+) -> List[str]:
+    deps: List[str] = []
+    for d in decorators:
+        if "with_mcp_context" in d:
+            deps.append("with_mcp_context")
+    if "MCPContext" in signature:
+        deps.append("MCPContext")
+    if "fastmcp.Context" in signature or re.search(r"\bContext\b", signature) and not deps:
+        # FastMCP request Context parameter
+        if "ctx: Context" in signature or "ctx=Context" in signature or "Context = None" in signature:
+            deps.append("fastmcp.Context")
+    for mod in ("prompt_registry", "auth_fastmcp", "auth_oidc"):
+        if mod in imports_seen and mod not in deps:
+            # Only tag if caller actually references the module in this symbol.
+            # Module-level imports already indicate potential dependency;
+            # per-symbol precision requires body inspection (kept light).
+            pass
+    seen: Dict[str, None] = {}
+    for d in deps:
+        if d not in seen:
+            seen[d] = None
+    return list(seen.keys())
+
+
+def _derive_required_context(deps: List[str], signature: str) -> List[str]:
+    ctx: List[str] = []
+    if "with_mcp_context" in deps or "MCPContext" in deps:
+        ctx.append("authenticated MCP request context (user claims from JWT)")
+    elif "fastmcp.Context" in deps or "Context = None" in signature:
+        ctx.append("FastMCP request Context")
+    return ctx
+
+
+def _intended_usage(usage_role: str) -> str:
+    return {
+        "tool_implementation": (
+            "Internal implementation invoked through MCP tool registration. "
+            "Do not import directly; invoke through the registered tool."
+        ),
+        "tool_registration": (
+            "Import and call once from the server entrypoint at startup to "
+            "register tools on the FastMCP instance. Modify to expose new tools."
+        ),
+        "resource_registration": (
+            "Import and call once from the server entrypoint at startup to "
+            "register MCP resources. Modify to add project-specific resources."
+        ),
+        "prompt_registration": (
+            "Import and call once from the server entrypoint at startup to "
+            "register MCP prompts from the prompt registry."
+        ),
+        "helper": (
+            "Module-level utility. Import and call directly from other code "
+            "in this module or from new tool implementations."
+        ),
+        "context_adapter": (
+            "Framework adapter copied as-is from mcp-base. Do not modify or "
+            "re-implement; treat as opaque infrastructure."
+        ),
+        "admin_operation": (
+            "Internal admin implementation invoked through MCP tool registration. "
+            "Do not import directly; invoke through the registered admin tool."
+        ),
+    }.get(usage_role, "Standard Python symbol; consult docstring before use.")
+
+
+_FRAMEWORK_FILE_ROLES = {
+    "mcp_context",
+    "auth_provider",
+    "auth_oidc",
+    "user_hash",
+    "prompt_registry",
+}
+
+
+def _derive_api_status(
+    is_placeholder: bool,
+    file_role: str,
+    usage_role: str,
+) -> str:
+    """Export intended visibility. Values:
+      - scaffold_placeholder: example/seed code meant to be replaced
+      - framework_internal:   copied-from-mcp-base infra, treat as opaque
+      - internal:             implementation detail of this module
+      - module_public:        callable directly, but scoped to this module's
+                              own code (helpers / local utilities) — not a
+                              cross-module external API
+      - public:               meant to be imported or wired up by user code
+                              from outside this module (registration glue)
+    """
+    if is_placeholder:
+        return "scaffold_placeholder"
+    if file_role in _FRAMEWORK_FILE_ROLES:
+        return "framework_internal"
+    if usage_role in ("tool_implementation", "admin_operation"):
+        return "internal"
+    if usage_role == "helper":
+        return "module_public"
+    return "public"
+
+
+def _derive_opacity(api_status: str) -> str:
+    """Express whether the symbol should be treated as opaque.
+      - opaque:                     ignore unless replacing/removing
+      - inspect_if_modifying_module: read only when editing this module
+      - intended_for_direct_use:    import/call freely
+    """
+    if api_status in ("scaffold_placeholder", "framework_internal"):
+        return "opaque"
+    if api_status == "internal":
+        return "inspect_if_modifying_module"
+    return "intended_for_direct_use"
+
+
+_PLACEHOLDER_NAME_PREFIXES = ("example_", "TestExample")
+_PLACEHOLDER_FILE_ROLES = {"test_plugin_example"}
+
+
+def _is_placeholder_symbol(name: str, file_role: str) -> bool:
+    """True when the symbol is a scaffold seed meant to be replaced/copied,
+    not extended in place. Derived from naming convention + file role.
+    """
+    if file_role in _PLACEHOLDER_FILE_ROLES:
+        return True
+    return any(name.startswith(prefix) for prefix in _PLACEHOLDER_NAME_PREFIXES)
+
+
+def _detect_delegates_to(func_node: ast.AST) -> Optional[str]:
+    """If the function awaits an `<name>_impl(...)` call, return that name.
+
+    Captures the standard scaffold pattern where a decorated @mcp.tool
+    handler is a thin wrapper that forwards to a top-level <name>_impl
+    function. Lets us emit an explicit runtime-name ↔ implementation link
+    without the agent reading the file.
+    """
+    for n in ast.walk(func_node):
+        if isinstance(n, ast.Await) and isinstance(n.value, ast.Call):
+            callee = _unparse(n.value.func)
+            if callee.endswith("_impl") and "." not in callee:
+                return callee
+    return None
+
+
+def _detect_side_effects(func_node: ast.AST) -> List[str]:
+    """Body-walk for common side-effect patterns."""
+    effects: set = set()
+    for n in ast.walk(func_node):
+        if isinstance(n, ast.Call):
+            fn_src = _unparse(n.func)
+            if not fn_src:
+                continue
+            if fn_src.endswith(".info") or fn_src.endswith(".warning") or fn_src.endswith(".error"):
+                if fn_src.startswith("logger.") or "ctx" in fn_src:
+                    effects.add("writes log/context messages")
+            if "reload_prompt_registry" in fn_src:
+                effects.add("reloads prompt registry from ConfigMap")
+            if fn_src.startswith("asyncio.to_thread"):
+                effects.add("runs blocking I/O on a worker thread")
+            if fn_src.startswith("os.getenv") or fn_src.startswith("os.environ"):
+                effects.add("reads environment variables")
+            if fn_src.startswith("open(") or fn_src == "open":
+                effects.add("reads/writes local files")
+            if fn_src.startswith("httpx.") or fn_src.startswith("requests."):
+                effects.add("performs outbound HTTP requests")
+        elif isinstance(n, ast.Raise):
+            effects.add("raises exceptions on error paths")
+        elif isinstance(n, ast.Attribute):
+            src = _unparse(n)
+            if src.startswith("os.environ"):
+                effects.add("reads environment variables")
+    return sorted(effects)
+
+
+def _is_public(name: str) -> bool:
+    return bool(name) and not name.startswith("_")
+
+
+def _enrich_parameter_docs(
+    parameter_docs: Dict[str, str],
+    signature: str,
+    decorators: List[str],
+) -> Dict[str, str]:
+    """Fill obvious ctx parameter docs from signature/decorator context.
+
+    Only fills when the signal is unambiguous — when the agent could
+    read it off the signature anyway. Leaves non-obvious parameters
+    (domain-specific names like `cluster_name`, `namespace`) untouched.
+    """
+    if "ctx" in parameter_docs and parameter_docs["ctx"]:
+        return parameter_docs
+    if "ctx" not in signature:
+        return parameter_docs
+    has_with_mcp_context = any("with_mcp_context" in d for d in decorators)
+    if has_with_mcp_context or "MCPContext" in signature:
+        parameter_docs["ctx"] = (
+            "Authenticated MCP request context with user claims extracted "
+            "from the verified JWT (sub, preferred_username, email, ...)."
+        )
+    elif "Context = None" in signature or "ctx: Context" in signature:
+        parameter_docs["ctx"] = (
+            "FastMCP request Context injected by the runtime; used for "
+            "logging and progress notifications back to the MCP client."
+        )
+    return parameter_docs
+
+
+def _infer_returns_doc(
+    existing: str,
+    signature: str,
+    usage_role: str,
+) -> str:
+    """Synthesize returns_doc only for rigid MCP-exposed patterns where the
+    return shape is fixed by the protocol. Otherwise leave blank.
+    """
+    if existing:
+        return existing
+    if "-> str" not in signature:
+        return ""
+    if usage_role in ("tool_implementation", "admin_operation"):
+        return "Formatted string response returned to the MCP tool caller."
+    return ""
+
+
+def _function_record(
+    node: ast.AST,
+    *,
+    kind_override: Optional[str] = None,
+    file_role: str = "other",
+    imports_seen: Optional[List[str]] = None,
+    is_class_member: bool = False,
+) -> Dict[str, Any]:
+    """Build an enriched symbol record for a function/method node."""
+    is_async = isinstance(node, ast.AsyncFunctionDef)
+    default_kind = "async_function" if is_async else "function"
+    if is_class_member:
+        default_kind = "async_method" if is_async else "method"
+    kind = kind_override or default_kind
+
+    decorators = _decorators(node)
+    signature = _format_signature(node)
+    exposed_as = _detect_exposed_as(decorators)
+    doc = _parse_docstring_sections(ast.get_docstring(node))
+    usage_role = _classify_usage_role(
+        name=node.name,
+        decorators=decorators,
+        exposed_as=exposed_as,
+        is_class=False,
+        file_role=file_role,
+    )
+    depends_on = _derive_depends_on(decorators, signature, imports_seen or [])
+    required_context = _derive_required_context(depends_on, signature)
+    side_effects = _detect_side_effects(node)
+    intended_usage = _intended_usage(usage_role)
+    is_placeholder = _is_placeholder_symbol(node.name, file_role)
+    api_status = _derive_api_status(is_placeholder, file_role, usage_role)
+    opacity = _derive_opacity(api_status)
+    parameter_docs = _enrich_parameter_docs(dict(doc["parameter_docs"]), signature, decorators)
+    returns_doc = _infer_returns_doc(doc["returns_doc"], signature, usage_role)
+
+    rec: Dict[str, Any] = {
+        "name": node.name,
+        "kind": kind,
+        "line_hint": node.lineno,
+        "signature": signature,
+        "decorators": decorators,
+        "summary": doc["summary"] or _docstring_summary(node),
+        "parameter_docs": parameter_docs,
+        "returns_doc": returns_doc,
+        "raises": doc["raises"],
+        "side_effects": side_effects,
+        "usage_role": usage_role,
+        "api_status": api_status,
+        "opacity": opacity,
+        "depends_on": depends_on,
+        "required_context": required_context,
+        "intended_usage": intended_usage,
+        "is_placeholder": is_placeholder,
+    }
+    if exposed_as is not None:
+        rec["exposed_as"] = exposed_as
+    return rec
+
+
+def _class_record(
+    node: ast.ClassDef,
+    *,
+    file_role: str = "other",
+    imports_seen: Optional[List[str]] = None,
+) -> Dict[str, Any]:
+    methods: List[Dict[str, Any]] = []
+    for item in node.body:
+        if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            # Public methods + __init__ (the constructor contract).
+            if _is_public(item.name) or item.name == "__init__":
+                methods.append(_function_record(
+                    item,
+                    file_role=file_role,
+                    imports_seen=imports_seen,
+                    is_class_member=True,
+                ))
+
+    decorators = _decorators(node)
+    doc_sections = _parse_docstring_sections(ast.get_docstring(node))
+    usage_role = _classify_usage_role(
+        name=node.name,
+        decorators=decorators,
+        exposed_as=None,
+        is_class=True,
+        file_role=file_role,
+    )
+
+    is_placeholder = _is_placeholder_symbol(node.name, file_role)
+    api_status = _derive_api_status(is_placeholder, file_role, usage_role)
+    opacity = _derive_opacity(api_status)
+
+    return {
+        "name": node.name,
+        "kind": "class",
+        "line_hint": node.lineno,
+        "decorators": decorators,
+        "base_classes": [_unparse(b) for b in (node.bases or []) if b is not None],
+        "summary": doc_sections["summary"] or _docstring_summary(node),
+        "parameter_docs": doc_sections["parameter_docs"],
+        "raises": doc_sections["raises"],
+        "usage_role": usage_role,
+        "api_status": api_status,
+        "opacity": opacity,
+        "intended_usage": _intended_usage(usage_role),
+        "is_placeholder": is_placeholder,
+        "methods": methods,
+    }
+
+
+def _walk_registered_surface(
+    register_node: ast.AST,
+    *,
+    file_role: str,
+    imports_seen: List[str],
+) -> List[Dict[str, Any]]:
+    """Find @mcp.tool / @mcp.resource / @mcp.prompt decorated functions
+    nested inside a register_* function and surface them as top-level
+    registered_surface entries.
+    """
+    registered: List[Dict[str, Any]] = []
+    parent_name = getattr(register_node, "name", "")
+    for node in ast.walk(register_node):
+        if node is register_node:
+            continue
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        decs = _decorators(node)
+        exposed = _detect_exposed_as(decs)
+        if exposed is None:
+            continue
+        rec = _function_record(
+            node,
+            file_role=file_role,
+            imports_seen=imports_seen,
+        )
+        rec["parent"] = parent_name
+        delegate = _detect_delegates_to(node)
+        if delegate:
+            rec["delegates_to"] = delegate
+        registered.append(rec)
+    return registered
+
+
+_KNOWN_RUNTIME_DEPS = {
+    "fastmcp": "FastMCP framework",
+    "mcp_context": "MCPContext / with_mcp_context",
+    "prompt_registry": "PromptRegistry (ConfigMap-backed, hot-reload)",
+    "auth_fastmcp": "FastMCP auth provider factory",
+    "auth_oidc": "Generic OIDC middleware",
+    "user_hash": "User ID hashing utilities",
+    "artifact_store": "Scaffold artifact store (mcp-base internal)",
+    "redis": "Redis session store",
+    "kubernetes": "Kubernetes API client",
+    "httpx": "HTTP client (outbound)",
+    "jinja2": "Jinja2 templating",
+    "pydantic": "Pydantic validation",
+    "yaml": "YAML parsing",
+}
+
+
+def _derive_module_flags(
+    symbols: List[Dict[str, Any]],
+    registered_surface: List[Dict[str, Any]],
+    role_meta: Dict[str, Any],
+    imports: List[str],
+) -> Dict[str, Any]:
+    has_registration = any(
+        s.get("usage_role", "").endswith("_registration") for s in symbols
+    )
+    has_impl = any(
+        s.get("usage_role") in ("tool_implementation", "admin_operation")
+        for s in symbols
+    ) or bool(registered_surface)
+    has_helpers = any(s.get("usage_role") == "helper" for s in symbols)
+
+    runtime_deps = [
+        _KNOWN_RUNTIME_DEPS[imp] for imp in imports if imp in _KNOWN_RUNTIME_DEPS
+    ]
+
+    return {
+        "contains_business_logic": has_impl,
+        "contains_registration": has_registration,
+        "contains_helpers": has_helpers,
+        "primary_customization_surface": role_meta.get("customization_relevance") == "high",
+        "runtime_dependencies": runtime_deps,
+    }
+
+
+def _extract_python_api(
+    content: str,
+    *,
+    file_role: str = "other",
+    max_symbols: int = 40,
+    max_imports: int = 40,
+) -> Dict[str, Any]:
+    """
+    AST-extract the API surface of a Python source file.
+
+    Returns a dict with:
+      - symbols: top-level public function/class records with full contract
+                 metadata (signature, decorators, parameter_docs, returns_doc,
+                 raises, side_effects, usage_role, depends_on, required_context,
+                 intended_usage, exposed_as, methods for classes)
+      - exports: public top-level symbol names
+      - imports: deduplicated top-level module imports
+      - registered_surface: @mcp.tool / @mcp.resource / @mcp.prompt handlers
+                 nested inside register_* functions (MCP runtime surface)
+
+    On SyntaxError, returns an empty structure rather than raising — the
+    scaffold's stored bytes remain authoritative even if extraction fails.
+    """
+    try:
+        tree = ast.parse(content)
+    except SyntaxError:
+        return {
+            "symbols": [],
+            "exports": [],
+            "imports": [],
+            "registered_surface": [],
+        }
+
+    # Pass 1: collect imports so per-symbol records can reason about deps.
+    seen_imports: Dict[str, None] = {}
+    for node in tree.body:
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                top = alias.name.split(".", 1)[0]
+                if top not in seen_imports and len(seen_imports) < max_imports:
+                    seen_imports[top] = None
+        elif isinstance(node, ast.ImportFrom):
+            if node.module and node.level == 0:
+                top = node.module.split(".", 1)[0]
+                if top not in seen_imports and len(seen_imports) < max_imports:
+                    seen_imports[top] = None
+    imports_list = list(seen_imports.keys())
+
+    # Pass 2: top-level public symbols + nested MCP surface.
+    symbols: List[Dict[str, Any]] = []
+    exports: List[str] = []
+    registered_surface: List[Dict[str, Any]] = []
+
+    for node in tree.body:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            if not _is_public(node.name):
+                continue
+            if len(symbols) < max_symbols:
+                symbols.append(_function_record(
+                    node,
+                    file_role=file_role,
+                    imports_seen=imports_list,
+                ))
+                exports.append(node.name)
+            if isinstance(node, ast.FunctionDef) and node.name in _REGISTER_NAMES:
+                registered_surface.extend(_walk_registered_surface(
+                    node,
+                    file_role=file_role,
+                    imports_seen=imports_list,
+                ))
+        elif isinstance(node, ast.ClassDef):
+            if not _is_public(node.name):
+                continue
+            if len(symbols) < max_symbols:
+                symbols.append(_class_record(
+                    node,
+                    file_role=file_role,
+                    imports_seen=imports_list,
+                ))
+                exports.append(node.name)
+
+    # Back-link impls to their MCP exposure. The registered handler
+    # delegates_to a top-level _impl; mirror that as exposed_via on the
+    # impl so the agent can start from either end of the call graph.
+    impl_index = {s["name"]: s for s in symbols}
+    for reg in registered_surface:
+        target = reg.get("delegates_to")
+        if not target or target not in impl_index:
+            continue
+        impl = impl_index[target]
+        exposed_as = reg.get("exposed_as") or {}
+        impl["exposed_via"] = {
+            "handler": reg["name"],
+            "kind": exposed_as.get("kind", ""),
+            **({"name": exposed_as["name"]} if "name" in exposed_as else {}),
+            **({"uri": exposed_as["uri"]} if "uri" in exposed_as else {}),
+        }
+
+    return {
+        "symbols": symbols,
+        "exports": exports,
+        "imports": imports_list,
+        "registered_surface": registered_surface,
+    }
+
+
+# ----- Operational metadata helpers --------------------------------------
+
+_EXECUTABLE_PATH_RULES = [
+    re.compile(r"^bin/.+\.py$"),
+    re.compile(r"^test/[^/]+\.py$"),  # test/test-mcp.py, test/get-user-token.py, etc.
+]
+
+
+def _is_executable_path(path: str) -> bool:
+    """True if the generated file should be marked +x after write."""
+    return any(rule.match(path) for rule in _EXECUTABLE_PATH_RULES)
+
+
+def _detect_line_endings(content: str) -> str:
+    """Return 'crlf' if the content contains any \\r\\n, else 'lf'."""
+    return "crlf" if "\r\n" in content else "lf"
+
+
+def _infer_role(path: str) -> Dict[str, Any]:
+    """Look up the role/relevance/summary metadata for a generated path."""
+    for pattern, meta in _ROLE_RULES:
+        if pattern.match(path):
+            return dict(meta)
+    return dict(_DEFAULT_ROLE)
+
+
+def build_artifact_metadata(
+    project_id: str,
+    path: str,
+    *,
+    include_symbols: bool = True,
+    include_imports: bool = True,
+) -> Optional[Dict[str, Any]]:
+    """
+    Build a compact metadata record for a stored artifact.
+
+    Returns None when the artifact does not exist. The returned dict is
+    deliberately lightweight — no file contents — so metadata tools can be
+    invoked without bloating model context. It is, however, rich enough
+    to serve as a materialization contract: the agent can write the file
+    from resources/read bytes, chmod it, and import from it without ever
+    pulling the file into model context.
+
+    Operational fields (always present):
+      - content_encoding, line_endings, hash_algorithm
+      - executable, permissions, post_write_actions
+    """
+    artifact = artifact_store.get(project_id, path)
+    if artifact is None:
+        return None
+
+    role_meta = _infer_role(path)
+    is_executable = _is_executable_path(path)
+    post_write_actions = [f"chmod +x {path}"] if is_executable else []
+
+    record: Dict[str, Any] = {
+        "project_id": project_id,
+        "path": path,
+        "uri": f"scaffold://{project_id}/{path}",
+        "mime_type": artifact.mime_type,
+        "size_bytes": artifact.size_bytes,
+        "sha256": artifact.sha256,
+        "hash_algorithm": "sha256",
+        "content_encoding": "utf-8",
+        "line_endings": _detect_line_endings(artifact.content),
+        "executable": is_executable,
+        "permissions": "0755" if is_executable else "0644",
+        "post_write_actions": post_write_actions,
+        **role_meta,
+    }
+
+    if artifact.mime_type == "text/x-python":
+        api = _extract_python_api(artifact.content, file_role=role_meta.get("role", "other"))
+        module_flags = _derive_module_flags(
+            symbols=api["symbols"],
+            registered_surface=api["registered_surface"],
+            role_meta=role_meta,
+            imports=api["imports"],
+        )
+        if include_symbols:
+            record["symbols"] = api["symbols"]
+            record["exports"] = api["exports"]
+            record["registered_surface"] = api["registered_surface"]
+        if include_imports:
+            record["imports"] = api["imports"]
+        record.update(module_flags)
+
+    return record
 
 
 # ============================================================================
@@ -283,82 +1457,85 @@ async def generate_server_scaffold_impl(
     auth_type: Literal["auth0", "keycloak", "oidc"] = "auth0"
 ) -> Dict[str, Any]:
     """
-    Generate complete MCP server project scaffold.
+    Generate complete MCP server project scaffold (resource-first).
 
-    Creates a full project structure with all necessary files for
-    a production-ready Kubernetes MCP server. Files are stored as artifacts
-    and can be retrieved individually via resources/read with scaffold:// URIs.
-
-    ========================================================================
-    CRITICAL: PHASE 2 IS IMPOSSIBLE UNTIL PHASE 1 IS VERIFIED COMPLETE
-    ========================================================================
-
-    This is not advice. It is a logical dependency:
-    - You cannot customize files that don't exist on disk
-    - You cannot test without test-mcp.py written
-    - You cannot build without Dockerfile written
-    - ARTIFACTS EXPIRE - retrieve them NOW or lose them forever
-
-    Phase 2 (customization) is UNDEFINED until Phase 1 is verified complete.
-    Treat Phase 2 as impossible, not just inadvisable, until then.
+    Returns a COMPACT manifest — no file bytes in the tool output. Every
+    generated file is stored and exposed as a concrete MCP resource at
+    `scaffold://{project_id}/{path}`. Bulk byte transfer is intended to
+    happen via `resources/read`; tool outputs stay context-light.
 
     ========================================================================
-    PHASE 1: SCAFFOLD RETRIEVAL (MECHANICAL - NO CREATIVITY)
+    RETRIEVAL CONTRACT (resource-first)
     ========================================================================
 
-    This is MECHANICAL work. Think: copy machine, not architect.
+    Primary (bulk bytes):
+        resources/read("scaffold://{project_id}/{path}")
+        → returns exact file bytes. Verify each file's local hash matches
+          the artifact's `sha256`.
 
-    REQUIRED STEPS (no exceptions):
-    1. Call this function - note file_count and scaffold_resources in response
-    2. Loop through EVERY file in the returned scaffold_resources dict
-    3. For EACH file: content = read_resource(scaffold://{project_id}/{path})
-    4. For EACH file: write EXACT content to ./path (current directory)
-    5. VERIFY: count files on disk == file_count from response
+    Primary (coordination metadata):
+        list_scaffold_artifact_metadata(project_id)
+        read_scaffold_artifact_metadata(project_id, path)
+        → compact metadata (role, relevance, symbols, notes). No contents.
 
-    ARTIFACTS EXPIRE. Do not pause. Do not skip files. Complete NOW.
-
-    ========================================================================
-    PHASE 1 VERIFICATION (REQUIRED GATE)
-    ========================================================================
-
-    You CANNOT proceed until you verify:
-    [ ] actual files on disk == file_count (e.g., 34 == 34)
-    [ ] All files from files_list exist on disk
-
-    If verification fails, you failed. Generate a new scaffold.
+    Last-resort compatibility fallback (context-bloat risk):
+        read_scaffold_artifact(project_id, path)
+        → returns full file bytes in tool output. DO NOT USE if
+          resources/read is available. Reserved for tool-only proxy
+          aggregators that drop resources entirely (e.g. OpenAI's
+          codex_apps).
 
     ========================================================================
-    PHASE 2: CUSTOMIZATION (IMPOSSIBLE UNTIL PHASE 1 VERIFIED)
+    HARD GATE
     ========================================================================
 
-    Only after verification passes:
-    - Customize the *_tools.py file for your specific functionality
-    - Add any additional dependencies to requirements.txt
+    Scaffold validity requires every on-disk file to be byte-identical to
+    the stored artifact. Verify via `sha256` after writing. On ANY retrieval
+    failure, STOP and produce SCAFFOLD_RETRIEVAL_FAILURE.md
+    (template in the `failure_report_template` field). Do NOT:
+      - Reconstruct from memory
+      - Render templates as a substitute (`render_template` is NOT a fallback)
+      - Create placeholder files
+      - Infer missing contents from filenames
+      - Continue to customization with an incomplete scaffold
+
+    SCAFFOLD_INVENTORY.md may be produced only after 100% verified retrieval.
+
+    ========================================================================
+    INTENDED AGENT WORKFLOW
+    ========================================================================
+
+    1. Call generate_server_scaffold. Read the `artifacts` manifest — each
+       entry has path, uri, mime_type, size_bytes, sha256, role,
+       customization_relevance, and summary.
+    2. For each artifact, resources/read the uri and write bytes to the
+       local workspace at `path`.
+    3. Verify local SHA256 matches `artifacts[i].sha256`.
+    4. Create SCAFFOLD_INVENTORY.md only after 100% hash match.
+    5. Inspect only files where `customization_relevance` is high or medium.
+       Use read_scaffold_artifact_metadata for symbols/notes before opening
+       files locally.
+    6. Customize locally; chmod +x bin/*; configure-make.py; build/push/deploy.
 
     ========================================================================
 
     The scaffold includes:
     - src/ - Server code, tools, auth modules, test server
     - bin/ - Configuration scripts (bin/configure-make.py)
-    - chart/ - Complete Helm chart with ALL templates (deployment, service, ingress, etc.)
-    - test/ - Test framework with driver scripts and plugin tests
-    - Dockerfile - Production container
-    - Dockerfile.test - Test container (no auth, for CI/CD)
-    - Makefile - Build targets including: build, build-test, push, push-test, test
-    - requirements.txt
+    - chart/ - Complete Helm chart with ALL templates
+    - test/ - Plugin-based test framework
+    - Dockerfile, Dockerfile.test, Makefile, requirements.txt
 
-    NOTE: Most utility scripts are available via the mcp-base CLI (pip install mcp-base).
-    Exception: bin/configure-make.py IS included to generate make.env for Makefile config.
-    For OIDC/auth setup, use: mcp-base setup-oidc
+    NOTE: Utility scripts (setup-oidc, add-user, etc.) are available via
+    the mcp-base CLI (`pip install mcp-base`). Exception:
+    bin/configure-make.py IS included to generate make.env.
 
     CRITICAL USAGE RULES:
-    1. NON-DEVIATION RULE: Use MCPBase scaffold artifacts as the ONLY source of project files.
-       DO NOT create alternate scaffolds or replacement files under any circumstances.
-    2. ERROR HANDLING: On any tool or schema error, STOP immediately, report the full error,
-       and propose recovery using resources/read with scaffold:// URIs.
-       DO NOT attempt to work around errors by creating alternate scaffolds.
-    3. PARAMETER DEFAULTS: Use default parameter values unless the user explicitly specifies otherwise.
-       Do not override include_helm or include_test unless explicitly requested.
+    1. NON-DEVIATION: scaffold artifacts are the ONLY source of project files.
+    2. ERROR HANDLING: on retrieval error, report the exact error and retry;
+       do NOT substitute alternate scaffolds or rendered templates.
+    3. PARAMETER DEFAULTS: don't override include_helm / include_test unless
+       explicitly requested.
 
     Args:
         server_name: Human-readable server name (e.g., "Kubernetes Manager MCP")
@@ -375,17 +1552,27 @@ async def generate_server_scaffold_impl(
                    - "oidc": Generic OIDC middleware for other IdPs (Dex, Okta, etc.)
 
     Returns:
-        JSON object with project metadata, file list, and scaffold_resources dict.
-        Use resources/read with scaffold://{project_id}/{path} URIs to retrieve individual files.
-
-        Structure:
+        Compact JSON manifest — no file contents. Shape:
         {
             "project_id": "server-name-abc123",
             "server_name": "Server Name",
             "file_count": 37,
-            "files": ["Dockerfile", "src/...", ...],
-            "resource_links": [{"uri": "scaffold://...", "path": "...", ...}],
-            "quick_start": ["..."],
+            "artifacts": [
+                {
+                    "path": "src/foo_server.py",
+                    "uri": "scaffold://server-name-abc123/src/foo_server.py",
+                    "mime_type": "text/x-python",
+                    "size_bytes": 4096,
+                    "sha256": "<hex digest>",
+                    "role": "server_entrypoint",
+                    "customization_relevance": "medium",
+                    "summary": "..."
+                },
+                ...
+            ],
+            "retrieval_contract": { ... },
+            "workflow": [ ... ],
+            "failure_report_template": { ... },
             "warnings": [],
             "truncated": false
         }
@@ -457,6 +1644,7 @@ async def generate_server_scaffold_impl(
     # Bin scripts (coordinate with Dockerfile/Makefile)
     bin_templates = [
         ("bin/configure-make.py.j2", "bin/configure-make.py"),
+        ("bin/smoke_test.py.j2", "bin/smoke_test.py"),
     ]
 
     # Process template files
@@ -581,7 +1769,7 @@ class TestExampleTool(TestPlugin):
     # Generate unique project ID for artifact storage
     project_id = f"{server_name_kebab}-{uuid.uuid4().hex[:8]}"
 
-    # Store all files as artifacts
+    # Store all files as artifacts (size_bytes/sha256 computed in Artifact.__post_init__)
     for path, content in files.items():
         mime_type = get_mime_type_for_path(path)
         artifact_store.store(
@@ -592,88 +1780,128 @@ class TestExampleTool(TestPlugin):
             description=f"Generated file for {server_name}"
         )
 
-    # Build resource links for all files (always)
-    resource_links = []
+    # Build the compact artifacts manifest. Each entry carries URI + digest
+    # + operational fields (permissions, post-write actions, line endings)
+    # + role hints + module-level flags (contains_business_logic, etc.)
+    # so the agent can plan assembly and customization without reading any
+    # file bytes into model context. Python symbol/import surfaces are NOT
+    # included at this level — call list_scaffold_artifact_metadata or
+    # read_scaffold_artifact_metadata for API-contract details when
+    # customization is imminent.
+    _MODULE_FLAG_KEYS = (
+        "contains_business_logic",
+        "contains_registration",
+        "contains_helpers",
+        "primary_customization_surface",
+        "runtime_dependencies",
+    )
+    artifacts_manifest: List[Dict[str, Any]] = []
     for path in sorted(files.keys()):
-        mime_type = get_mime_type_for_path(path)
-        filename = path.split("/")[-1]
-        resource_links.append({
-            "uri": f"scaffold://{project_id}/{path}",
-            "path": path,
-            "name": filename,
-            "mimeType": mime_type
-        })
+        meta = build_artifact_metadata(
+            project_id, path,
+            include_symbols=False,
+            include_imports=False,
+        )
+        if meta is None:
+            continue
+        entry = {
+            "path": meta["path"],
+            "uri": meta["uri"],
+            "mime_type": meta["mime_type"],
+            "size_bytes": meta["size_bytes"],
+            "sha256": meta["sha256"],
+            "hash_algorithm": meta["hash_algorithm"],
+            "content_encoding": meta["content_encoding"],
+            "line_endings": meta["line_endings"],
+            "executable": meta["executable"],
+            "permissions": meta["permissions"],
+            "post_write_actions": meta["post_write_actions"],
+            "role": meta["role"],
+            "customization_relevance": meta["customization_relevance"],
+            "summary": meta["summary"],
+        }
+        for key in _MODULE_FLAG_KEYS:
+            if key in meta:
+                entry[key] = meta[key]
+        artifacts_manifest.append(entry)
 
-    # Build scaffold resource URIs for each file
-    scaffold_resources = {
-        path: f"scaffold://{project_id}/{path}"
-        for path in sorted(files.keys())
-    }
-
-    # Always return a consistent JSON object structure
     result = {
         "project_id": project_id,
         "server_name": server_name,
         "server_name_snake": server_name_snake,
         "server_name_kebab": server_name_kebab,
         "file_count": len(files),
-        "files": sorted(files.keys()),
-        "scaffold_resources": scaffold_resources,
-        "resource_links": resource_links,
-        "quick_start": [
-            "========================================================================",
-            "PHASE 1: CREATE SCAFFOLD_INVENTORY.md (REQUIRED DELIVERABLE)",
-            "========================================================================",
-            "",
-            "Your ONLY goal in Phase 1 is to produce SCAFFOLD_INVENTORY.md",
-            "This document IS your deliverable. Quality determines success.",
-            "",
-            "REQUIRED STEPS (no exceptions, no shortcuts):",
-            f"1. For EACH of the {len(files)} files, use resources/read with the scaffold:// URI",
-            f"   Example: resources/read(uri='scaffold://{project_id}/src/{server_name_snake}_server.py')",
-            "2. Write each file to disk EXACTLY as retrieved",
-            "3. Make bin scripts executable: chmod +x bin/*",
-            "4. Create SCAFFOLD_INVENTORY.md with details for EACH file:",
-            "   - Filename and path",
-            "   - Line count (exact)",
-            "   - Size in bytes",
-            "   - First 5 function/class/constant names (if code file)",
-            "",
-            "SCAFFOLD RESOURCE URIs (use with resources/read):",
-            f"   All files available at: scaffold://{project_id}/{{path}}",
-            "   See 'scaffold_resources' field for complete URI list",
-            "",
-            "VERIFICATION HEADER (must be at top of SCAFFOLD_INVENTORY.md):",
-            f"  [ ] File count: Retrieved ___ of {len(files)} expected files",
-            "  [ ] All files written to disk with exact content",
-            "  [ ] All files have inventory entries below",
-            "  [ ] No placeholders created",
-            "  [ ] No files skipped",
-            "",
-            "CRITICAL: You cannot fake line counts or function names.",
-            "Phase 2 customization quality is DIRECTLY PROPORTIONAL to",
-            "Phase 1 inventory completeness. Incomplete inventory = broken code.",
-            "",
-            "========================================================================",
-            "PHASE 2: CUSTOMIZE USING INVENTORY (ONLY AFTER PHASE 1 COMPLETE)",
-            "========================================================================",
-            "",
-            "Given SCAFFOLD_INVENTORY.md showing all scaffold components:",
-            f"  - Customize src/{server_name_snake}_tools.py",
-            f"  - Test: python src/{server_name_snake}_server.py --port {port}",
-            "  - Configure: python bin/configure-make.py  # Then: mcp-base setup-oidc",
-            "  - Deploy: make build && make push && make helm-install",
-            "",
-            "Refer to the inventory to understand what exists before modifying.",
-            "Your customizations WILL FAIL if Phase 1 inventory was incomplete."
+        "artifacts": artifacts_manifest,
+        "retrieval_contract": {
+            "bulk_bytes": (
+                "Use resources/read for scaffold://{project_id}/{path} URIs. "
+                "Every artifact is registered as a concrete MCP resource."
+            ),
+            "metadata": (
+                "Use list_scaffold_artifact_metadata(project_id) or "
+                "read_scaffold_artifact_metadata(project_id, path) for coordination "
+                "data (role, relevance, symbols, notes) without file contents."
+            ),
+            "fallback_full_content": (
+                "read_scaffold_artifact(project_id, path) is a LAST-RESORT "
+                "fallback for tool-only proxy aggregators (e.g. OpenAI's "
+                "codex_apps) that drop resources. DO NOT USE if resources/read "
+                "is available — it returns full bytes into tool output and "
+                "will blow model context for any non-trivial scaffold."
+            ),
+            "gate": (
+                "Scaffold validity requires each on-disk file to be byte-identical "
+                "to the stored artifact (verify via sha256). On any retrieval "
+                "failure, produce SCAFFOLD_RETRIEVAL_FAILURE.md and stop — do not "
+                "render templates, reconstruct, or substitute."
+            ),
+        },
+        "workflow": [
+            "1. For each artifact URI, call resources/read and write exact bytes to ./<path>.",
+            "2. Verify local hash == artifacts[i].sha256 for every file.",
+            "3. Only after 100% verification, create SCAFFOLD_INVENTORY.md.",
+            "4. Inspect only files with customization_relevance='high' or 'medium'; "
+            "use read_scaffold_artifact_metadata for symbols/notes before opening locally.",
+            "5. Customize locally. chmod +x bin/*.",
+            f"6. python bin/configure-make.py && make build && make push && make helm-install.",
         ],
+        "failure_report_template": {
+            "filename": "SCAFFOLD_RETRIEVAL_FAILURE.md",
+            "markdown": (
+                "# Scaffold Retrieval Failure\n\n"
+                f"- Project ID: {project_id}\n"
+                f"- Expected files: {len(files)}\n"
+                "- Retrieved files: <count>\n"
+                "- Failed files: <count>\n"
+                "- Files written to disk: none\n\n"
+                "## Failed Artifact Reads\n\n"
+                "| Path | URI | Error |\n"
+                "| --- | --- | --- |\n"
+                "| <path> | <scaffold uri> | <exact error message> |\n\n"
+                "## Conclusion\n\n"
+                "Scaffold generation returned a manifest, but scaffold artifacts were\n"
+                "not retrievable via resources/read (scaffold://...) nor via\n"
+                "read_scaffold_artifact. No scaffold files were written because\n"
+                "doing so would violate the exact-artifact invariant.\n\n"
+                "## Suggested Next Step\n\n"
+                "Verify that the MCP server exposes scaffold:// resources or\n"
+                "read_scaffold_artifact in the same session, and that the project_id\n"
+                "has not expired. Retry generation if the server was restarted.\n"
+            ),
+        },
         "warnings": [],
-        "truncated": False
+        "truncated": False,
     }
 
-    # Add a summary field for backward compatibility if requested
     if output_description == "summary":
-        result["summary"] = f"Generated {len(files)} files for {server_name}. Use resources/read with scaffold://{project_id}/{{path}} URIs to retrieve files."
+        result["summary"] = (
+            f"Generated {len(files)} files for {server_name}. "
+            f"Primary retrieval: resources/read('scaffold://{project_id}/<path>'). "
+            f"Use list_scaffold_artifact_metadata / read_scaffold_artifact_metadata for "
+            f"coordination data without file contents. read_scaffold_artifact is a "
+            f"compatibility fallback only. On any retrieval failure, stop and produce "
+            f"SCAFFOLD_RETRIEVAL_FAILURE.md."
+        )
 
     return result
 
@@ -821,49 +2049,54 @@ def register_resources(mcp):
         architecture_path = BASE_DIR / "ARCHITECTURE.md"
         return architecture_path.read_text()
 
-    # Dynamic artifact resource - list artifacts in a project
-    @mcp.resource("artifact://{project_id}")
-    def list_project_artifacts(project_id: str) -> str:
-        """
-        List all artifacts in a generated project.
+    # Scaffold artifact resources (URI-template fallbacks).
+    #
+    # Each artifact is ALSO registered as a concrete TextResource from the
+    # `generate_server_scaffold` tool wrapper (see register_tools). The
+    # concrete registration is what surfaces artifacts in `resources/list`
+    # and makes `resources/read(scaffold://{project_id}/{path})` resolvable
+    # through MCP aggregators that do not forward URI templates.
+    #
+    # The URI-template handlers below are kept as a fallback for clients and
+    # aggregators that *do* support RFC 6570 resource templates — they let
+    # a client resolve a scaffold URI even if the concrete registration has
+    # been pruned (e.g. after a server restart that dropped the in-memory
+    # FastMCP registry but where the artifact_store is still populated).
 
-        Args:
-            project_id: The project identifier (e.g., "my-server-abc12345")
-
-        Returns:
-            JSON list of artifact paths and scaffold:// URIs
-        """
-        artifacts = artifact_store.list_project(project_id)
-        if not artifacts:
-            return f"Error: No artifacts found for project: {project_id}"
-        return json.dumps(
-            [{"path": path, "uri": f"scaffold://{project_id}/{path}"} for path, _ in artifacts],
-            indent=2
-        )
-
-    # Dynamic artifact resource - read individual scaffold files
     @mcp.resource("scaffold://{project_id}/{path*}")
-    def read_scaffold_file(project_id: str, path: str) -> str:
+    def read_scaffold_resource(project_id: str, path: str) -> str:
         """
-        Read a scaffold file from a generated project.
+        Read a scaffold artifact by its scaffold:// URI.
 
-        Use resources/read with scaffold://{project_id}/{path} URI to retrieve
-        individual files from a generated scaffold.
-
-        Args:
-            project_id: The project identifier (e.g., "my-server-abc12345")
-            path: File path within the project (e.g., "src/my_server.py")
-
-        Returns:
-            File content as text
+        This is the URI-template fallback path. The preferred retrieval
+        paths are:
+          - Tool: `read_scaffold_artifact(project_id, path)` — always works
+          - Concrete resource: `resources/read("scaffold://<id>/<path>")` —
+            works on aggregators that surface concrete resources
         """
         artifact = artifact_store.get(project_id, path)
         if artifact is None:
-            available = artifact_store.list_project(project_id)
-            if not available:
-                return f"Error: Project '{project_id}' not found. It may have expired."
-            available_paths = [p for p, _ in available]
-            return f"Error: File '{path}' not found in project '{project_id}'.\nAvailable files:\n" + "\n".join(f"  - {p}" for p in available_paths[:10])
+            raise ValueError(
+                f"Scaffold artifact not found: scaffold://{project_id}/{path}. "
+                f"Call list_artifacts('{project_id}') to see available paths, "
+                f"or regenerate with generate_server_scaffold if the project expired."
+            )
+        return artifact.content
+
+    @mcp.resource("artifact://{project_id}/{path*}")
+    def read_artifact_resource(project_id: str, path: str) -> str:
+        """
+        Read a scaffold artifact by its artifact:// URI (alias for scaffold://).
+
+        The artifact_store uses artifact:// URIs internally; this handler
+        accepts them so older clients that captured artifact:// URIs still
+        resolve.
+        """
+        artifact = artifact_store.get(project_id, path)
+        if artifact is None:
+            raise ValueError(
+                f"Scaffold artifact not found: artifact://{project_id}/{path}"
+            )
         return artifact.content
 
 
@@ -930,29 +2163,26 @@ def register_tools(mcp):
         auth_type: Literal["auth0", "keycloak", "oidc"] = "auth0"
     ) -> Dict[str, Any]:
         """
-        Generate complete MCP server project scaffold.
+        Generate an MCP server project scaffold (resource-first).
 
-        Returns a JSON object with project metadata and scaffold_resources dict.
-        Use resources/read with scaffold://{project_id}/{path} URIs to retrieve individual files.
+        Returns a COMPACT manifest: per-artifact metadata (path, uri,
+        mime_type, size_bytes, sha256, role, relevance, summary) plus a
+        retrieval_contract. No file contents are returned by this tool —
+        bulk bytes must be fetched via `resources/read("scaffold://...")`.
+        See `retrieval_contract` in the response for the full contract
+        (metadata tools, bounded reads, and the compatibility fallback).
 
-        NOTE: Utility scripts are NOT included. They are available via the mcp-base CLI:
-        pip install mcp-base && mcp-base --help
+        NOTE: Utility scripts are NOT included. They are available via the
+        mcp-base CLI: `pip install mcp-base && mcp-base --help`.
 
         Args:
             auth_type: Authentication type (default: "auth0"):
                        - "auth0": FastMCP Auth0Provider OAuth proxy
-                       - "keycloak": FastMCP KeycloakAuthProvider (DCR-based, requires
+                       - "keycloak": FastMCP KeycloakAuthProvider (requires
                          Keycloak >= 26.6.0 and fastmcp >= 3.2.4)
-                       - "oidc": Generic OIDC middleware for other IdPs (Dex, Okta, etc.)
-
-        Returns:
-            JSON object containing:
-            - project_id: Unique identifier for artifacts
-            - scaffold_resources: Dict mapping file paths to scaffold:// URIs
-            - files: List of all generated file paths
-            - quick_start: Steps to get started
+                       - "oidc": Generic OIDC middleware for other IdPs
         """
-        return await generate_server_scaffold_impl(
+        result = await generate_server_scaffold_impl(
             server_name=server_name,
             output_description=output_description,
             port=port,
@@ -963,23 +2193,45 @@ def register_tools(mcp):
             auth_type=auth_type
         )
 
+        # Register each artifact as a concrete MCP resource so it shows up
+        # in `resources/list` and is directly addressable via
+        # `resources/read`. Resource-first retrieval depends on this — the
+        # URI-template handler in register_resources is just a fallback.
+        project_id = result["project_id"]
+        for path, _artifact_uri in artifact_store.list_project(project_id):
+            artifact = artifact_store.get(project_id, path)
+            if artifact is None:
+                continue
+            scaffold_uri = f"scaffold://{project_id}/{path}"
+            try:
+                mcp.add_resource(TextResource(
+                    uri=scaffold_uri,
+                    name=f"scaffold:{project_id}:{path}",
+                    text=artifact.content,
+                    mime_type=artifact.mime_type,
+                    description=f"Scaffold file {path} for project {project_id}",
+                ))
+            except Exception as e:
+                logger.warning(
+                    f"Failed to register concrete scaffold resource {scaffold_uri}: {e}"
+                )
+
+        return result
+
     @mcp.tool(name="list_artifacts")
     async def list_artifacts(project_id: str) -> str:
         """
-        List all generated artifacts in a project.
+        List generated artifact paths and URIs (compact).
 
-        Use this after generate_server_scaffold to see all available files,
-        then use resources/read with scaffold:// URIs to retrieve specific files.
-
-        CRITICAL: This is the authoritative source for project files. Always use
-        the official artifact list - DO NOT create alternate file lists or replacement
-        scaffolds.
+        Backwards-compatible path listing. For coordination metadata (role,
+        relevance, symbols, notes), prefer `list_scaffold_artifact_metadata`.
+        For bulk bytes, prefer `resources/read("scaffold://...")`.
 
         Args:
             project_id: The project identifier returned by generate_server_scaffold
 
         Returns:
-            JSON list of available artifact paths
+            JSON with file paths and matching scaffold:// URIs.
         """
         artifacts = artifact_store.list_project(project_id)
         if not artifacts:
@@ -990,5 +2242,219 @@ def register_tools(mcp):
         return json.dumps({
             "project_id": project_id,
             "file_count": len(artifacts),
-            "files": [path for path, _ in artifacts]
+            "files": [path for path, _ in artifacts],
+            "artifact_uris": [
+                {"path": path, "uri": f"scaffold://{project_id}/{path}"}
+                for path, _ in artifacts
+            ],
+            "retrieval_contract": {
+                "bulk_bytes": "resources/read('scaffold://{project_id}/{path}')",
+                "metadata": "list_scaffold_artifact_metadata / read_scaffold_artifact_metadata",
+                "fallback": "read_scaffold_artifact (context-bloat risk)",
+            },
         }, indent=2)
+
+    @mcp.tool(name="list_scaffold_artifact_metadata")
+    async def list_scaffold_artifact_metadata(project_id: str) -> str:
+        """
+        Compact metadata for every artifact in a project (no contents).
+
+        Intended to be the first tool called after generate_server_scaffold.
+        Returns per-file:
+
+        Universal fields:
+        - path, uri, mime_type, size_bytes, sha256, hash_algorithm
+        - content_encoding, line_endings, executable, permissions,
+          post_write_actions
+        - role, customization_relevance, summary,
+          customization_notes, verification_notes
+
+        Python-only module-level fields:
+        - contains_business_logic, contains_registration, contains_helpers
+        - primary_customization_surface
+        - runtime_dependencies (human-readable list derived from imports)
+        - exports (public top-level names)
+        - registered_surface (functions decorated with @mcp.tool /
+          @mcp.resource / @mcp.prompt inside register_* — the MCP runtime
+          surface, lifted to module level for easy discovery)
+
+        Python-only per-symbol fields (on each entry in `symbols`):
+        - signature, decorators, line_hint, kind
+        - summary, parameter_docs, returns_doc, raises, side_effects
+        - usage_role (tool_implementation / tool_registration /
+          resource_registration / prompt_registration / helper /
+          context_adapter / admin_operation)
+        - depends_on, required_context, intended_usage
+        - exposed_as ({kind: tool|resource|prompt, name|uri: ...}) when
+          the symbol is decorated for MCP exposure
+        - methods (for classes) — same shape as top-level symbols
+
+        The API surface is the materialization contract: it lets an agent
+        import from and call into a scaffold module (e.g. `from
+        mcp_context import with_mcp_context`) without ever pulling the
+        file's bytes into model context.
+
+        Args:
+            project_id: Project ID from generate_server_scaffold.
+
+        Returns:
+            JSON {project_id, file_count, artifacts: [...]}
+        """
+        artifacts = artifact_store.list_project(project_id)
+        if not artifacts:
+            all_projects = artifact_store.list_all_projects()
+            if all_projects:
+                return (
+                    f"Error: Project '{project_id}' not found.\n\n"
+                    "Available projects:\n" + "\n".join(f"  - {p}" for p in all_projects)
+                )
+            return "Error: No artifacts stored. Call generate_server_scaffold first."
+
+        records: List[Dict[str, Any]] = []
+        for path, _ in artifacts:
+            meta = build_artifact_metadata(
+                project_id, path,
+                include_symbols=True,
+                include_imports=False,
+            )
+            if meta is None:
+                continue
+            # Strip project_id/path duplication at the envelope level.
+            meta.pop("project_id", None)
+            records.append(meta)
+
+        return json.dumps({
+            "project_id": project_id,
+            "file_count": len(records),
+            "artifacts": records,
+        }, indent=2)
+
+    @mcp.tool(name="read_scaffold_artifact_metadata")
+    async def read_scaffold_artifact_metadata(project_id: str, path: str) -> str:
+        """
+        Detailed metadata for a single artifact (no file contents).
+
+        Returns the same shape as list_scaffold_artifact_metadata plus,
+        for Python files, an `imports` list (deduplicated top-level
+        module imports). Every `symbols` entry carries the full
+        materialization contract:
+
+        - signature (full Python signature incl. defaults and annotations)
+        - decorators, line_hint, summary
+        - parameter_docs (per-arg prose from the docstring)
+        - returns_doc (what the function returns conceptually)
+        - raises (exception types declared in the docstring)
+        - side_effects (detected from the body: logs, prompt reloads,
+          blocking I/O, env reads, outbound HTTP, raises)
+        - usage_role (tool_implementation vs tool_registration vs helper
+          vs context_adapter vs admin_operation etc.)
+        - depends_on (decorators and context types the symbol needs)
+        - required_context (e.g. authenticated MCP request context)
+        - intended_usage (how to invoke vs avoid)
+        - exposed_as ({kind: tool|resource|prompt, name|uri}) when the
+          symbol is decorated for MCP exposure
+        - methods (classes) — same detail per method
+
+        Module-level fields describe the file as a whole:
+        contains_business_logic, contains_registration, contains_helpers,
+        primary_customization_surface, runtime_dependencies,
+        registered_surface, exports, imports.
+
+        For most customization work, this metadata is enough to write
+        calling code without loading the file bytes.
+
+        Args:
+            project_id: Project ID from generate_server_scaffold.
+            path: File path within the project.
+        """
+        meta = build_artifact_metadata(
+            project_id, path,
+            include_symbols=True,
+            include_imports=True,
+        )
+        if meta is None:
+            available = artifact_store.list_project(project_id)
+            if not available:
+                all_projects = artifact_store.list_all_projects()
+                if all_projects:
+                    return (
+                        f"Error: Project '{project_id}' not found.\n\n"
+                        "Available projects:\n" + "\n".join(f"  - {p}" for p in all_projects)
+                    )
+                return "Error: No artifacts stored. Call generate_server_scaffold first."
+            available_paths = [p for p, _ in available]
+            return (
+                f"Error: File '{path}' not found in project '{project_id}'.\n"
+                f"Available files ({len(available_paths)}):\n"
+                + "\n".join(f"  - {p}" for p in available_paths[:20])
+                + ("\n  ..." if len(available_paths) > 20 else "")
+            )
+        return json.dumps(meta, indent=2)
+
+    @mcp.tool(name="read_scaffold_artifact")
+    async def read_scaffold_artifact(project_id: str, path: str) -> str:
+        """
+        ⚠️ LAST-RESORT COMPATIBILITY FALLBACK — DO NOT USE IF RESOURCES
+        ARE AVAILABLE. ⚠️
+
+        Reads the FULL content of a single scaffold artifact and returns
+        it inside tool output, which pulls every byte into the model
+        context window. For a typical scaffold (30+ files) this will
+        blow the context budget and push other tool results out.
+
+        The correct bulk-bytes path is ALWAYS:
+
+            resources/read("scaffold://{project_id}/{path}")
+
+        That path keeps artifact bytes out of model context entirely —
+        the client writes them straight to disk. Use
+        `list_scaffold_artifact_metadata` and
+        `read_scaffold_artifact_metadata` for coordination data
+        (compact, no file contents).
+
+        Call this tool ONLY when the MCP client in use cannot invoke
+        `resources/read` at all — e.g. OpenAI's `codex_apps` proxy,
+        which forwards only tools and drops resources/prompts
+        entirely. If your client supports `resources/read`, using this
+        tool is a bug: switch to the resource path.
+
+        RETRIEVAL GATE (see generate_server_scaffold instructions):
+        If retrieval fails for ANY expected file — via any path — STOP.
+        Do not reconstruct the file from memory, do not render templates as
+        a substitute, do not create a placeholder. Produce a
+        SCAFFOLD_RETRIEVAL_FAILURE.md report instead, per the failure
+        template in the generate_server_scaffold response.
+
+        Args:
+            project_id: The project identifier returned by generate_server_scaffold
+            path: File path within the project (e.g., "src/my_server.py").
+                  Must match a path from the scaffold's `files` list exactly.
+
+        Returns:
+            Exact file content as stored at scaffold generation time.
+
+        Raises:
+            ValueError: If the project or file is not found. Treat this as a
+            retrieval failure — do NOT fall back to template rendering.
+        """
+        artifact = artifact_store.get(project_id, path)
+        if artifact is None:
+            available = artifact_store.list_project(project_id)
+            if not available:
+                all_projects = artifact_store.list_all_projects()
+                hint = (
+                    f"\n\nAvailable projects:\n" + "\n".join(f"  - {p}" for p in all_projects)
+                    if all_projects else
+                    "\n\nNo scaffold projects are currently stored. Call generate_server_scaffold first."
+                )
+                raise ValueError(
+                    f"Project '{project_id}' not found. It may have expired.{hint}"
+                )
+            available_paths = [p for p, _ in available]
+            raise ValueError(
+                f"File '{path}' not found in project '{project_id}'.\n"
+                f"Available files ({len(available_paths)}):\n"
+                + "\n".join(f"  - {p}" for p in available_paths[:20])
+                + ("\n  ..." if len(available_paths) > 20 else "")
+            )
+        return artifact.content

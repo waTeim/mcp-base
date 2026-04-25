@@ -141,6 +141,12 @@ The server exposes these resources:
 - `pattern://deployment` - Production deployment
 - `pattern://prompt-management` - Versioned prompts with ConfigMap storage and hot-reload
 
+### Scaffold Artifact Resources (registered per generated project)
+- `scaffold://{project_id}/{path}` - Concrete MCP resource for each generated file
+  (registered by `generate_server_scaffold`; appears in `resources/list`)
+- `artifact://{project_id}/{path}` - Alias for legacy clients
+- URI-template fallbacks for both patterns are also registered
+
 ## MCP Tools
 
 ### `list_templates`
@@ -177,16 +183,55 @@ Generates complete MCP server project:
     DCR-based, no client_secret / JWT signing key / Redis required
   - `oidc`: Generic OIDC middleware for other IdPs (Dex, Okta, Azure AD, ...)
 
-### Artifact Retrieval Tools
+### Artifact Retrieval — Resource-First
 
-#### `list_artifacts(project_id)`
-**List all files in a generated project**
+Scaffold retrieval is **resource-first**: bulk bytes flow through MCP
+resources, tools return only compact coordination metadata. Every
+manifest entry carries `sha256` for byte-parity verification.
 
-Parameters:
-- `project_id`: Project ID from scaffold generation
+#### Primary — bulk bytes (MCP resource)
 
-Returns JSON list of all files with metadata (path, size, type). Use
-`resources/read` with `scaffold://{project_id}/{path}` to fetch file content.
+`scaffold://{project_id}/{path}` — concrete `TextResource` registered
+per artifact. Resolves via `resources/read` and returns exact bytes.
+Verify against `artifacts[i].sha256` before writing to disk. Bytes do
+not enter model context unless you explicitly read them.
+
+#### Primary — coordination metadata (tools, no file contents)
+
+The manifest returned by `generate_server_scaffold` is the
+**materialization contract**: every entry carries enough operational
+metadata to write the file correctly without loading contents.
+
+- Each manifest entry has: `path`, `uri`, `mime_type`, `size_bytes`,
+  `sha256`, `hash_algorithm`, `content_encoding`, `line_endings`,
+  `executable`, `permissions`, `post_write_actions`, `role`,
+  `customization_relevance`, `summary`.
+- `list_scaffold_artifact_metadata(project_id)` — the same manifest
+  fields **plus** the AST-extracted public API surface for every Python
+  file: `symbols` (with full signatures, decorators, docstring
+  summaries; nested `methods` for classes) and `exports`. This is
+  what lets an agent write calling code like
+  `from mcp_context import with_mcp_context` without ever reading
+  `mcp_context.py` into context.
+- `read_scaffold_artifact_metadata(project_id, path)` — same shape for
+  a single file, additionally adding `imports` (top-level modules the
+  file depends on).
+
+#### Lightweight listing
+
+- `list_artifacts(project_id)` — `{path, uri}` pairs plus the retrieval
+  contract. No file contents.
+
+#### LAST-RESORT fallback — do NOT use if resources/read is available
+
+- `read_scaffold_artifact(project_id, path)` returns the **full** file
+  contents inside tool output and pulls every byte into the model
+  context. For a typical scaffold (30+ files) this blows the context
+  budget. This tool exists **only** for MCP clients that cannot invoke
+  `resources/read` at all — e.g. OpenAI's `codex_apps` proxy, which
+  forwards only tools and drops resources/prompts entirely. If your
+  client supports `resources/read`, using this tool is a bug. Integrity
+  verification (sha256) is unchanged.
 
 ## Template Variables
 
@@ -211,24 +256,42 @@ result = await mcp.call_tool("list_templates")
 # 2. Get pattern documentation
 pattern = await mcp.call_tool("get_pattern", {"name": "fastmcp-tools"})
 
-# 3. Generate complete project
+# 3. Generate scaffold — returns compact manifest, NO file contents
 scaffold = await mcp.call_tool("generate_server_scaffold", {
     "server_name": "CloudNativePG MCP",
     "port": 4207,
-    "operator_cluster_roles": "cnpg-cloudnative-pg-edit"
+    "operator_cluster_roles": "cnpg-cloudnative-pg-edit",
 })
 project_id = scaffold["project_id"]
+artifacts  = scaffold["artifacts"]  # [{path, uri, sha256, role, ...}, ...]
 
-# 4. List artifacts (paths only)
-artifacts = await mcp.call_tool("list_artifacts", {"project_id": project_id})
+# 4. Pull bulk bytes via resources (primary path — stays out of model context)
+import hashlib, os
+for entry in artifacts:
+    resource = await mcp.read_resource(entry["uri"])  # scaffold://...
+    content  = resource.contents[0].text
+    assert hashlib.sha256(content.encode()).hexdigest() == entry["sha256"]
+    os.makedirs(os.path.dirname(entry["path"]) or ".", exist_ok=True)
+    with open(entry["path"], "w") as f:
+        f.write(content)
 
-# 5. Read a small file via resources/read (content loads into context)
-small_file = await mcp.read_resource(f"scaffold://{project_id}/src/my_server.py")
+# 5. Inspect metadata without loading file contents
+meta = await mcp.call_tool("list_scaffold_artifact_metadata", {
+    "project_id": project_id,
+})
+# per-entry: role, customization_relevance, summary, symbols
 
-# 6. Or render individual template
+# LAST-RESORT fallback for tool-only proxy clients (e.g. OpenAI's
+# codex_apps, which drops resources entirely). Do NOT use if
+# resources/read is available — pulls full bytes into model context:
+# content = await mcp.call_tool("read_scaffold_artifact", {
+#     "project_id": project_id, "path": "src/my_server.py",
+# })
+
+# Render individual template (NOT a scaffold-retrieval substitute)
 template = await mcp.call_tool("render_template", {
     "template_path": "server/entry_point.py.j2",
-    "server_name": "My MCP Server"
+    "server_name": "My MCP Server",
 })
 ```
 

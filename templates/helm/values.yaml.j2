@@ -111,10 +111,23 @@ jwt:
 # See mcp-base docs/cli-integration-contract.md for the full schema and pattern split.
 oidc:
   # REQUIRED: Authentication type. Drives Pattern A vs Pattern B chart branches.
-  #   "auth0"    — FastMCP Auth0Provider (Pattern A: local DCR, Redis, JWT signing key)
-  #   "oidc"     — generic OIDC middleware (Pattern A)
-  #   "keycloak" — FastMCP KeycloakAuthProvider (Pattern B; requires Keycloak >= 26.6.0)
-  authType: "oidc"
+  # You MUST set this to match the auth_type the scaffold was generated with —
+  # the entry point hard-codes the branch, the chart only configures it.
+  #
+  #   "keycloak" — FastMCP KeycloakAuthProvider (Pattern B; recommended for
+  #                MCP clients like Codex / Claude Desktop). Keycloak serves DCR
+  #                natively; no client_secret, JWT signing key, or Redis required.
+  #                Requires Keycloak >= 26.6.0 and fastmcp >= 3.2.4.
+  #                NOTE: Add `offline_access` to the realm's default client
+  #                scopes or DCR-registered MCP clients will receive no
+  #                refresh token (access tokens silently expire after ~5 min).
+  #   "auth0"    — FastMCP Auth0Provider OAuth proxy (Pattern A: local DCR,
+  #                Redis-backed sessions, JWT signing key required).
+  #   "oidc"     — generic OIDC middleware for other IdPs (Dex, Okta, Azure AD).
+  #                Pattern A; same Redis / JWT signing key requirements as auth0.
+  #                Publishes RFC 9728 / RFC 8414 / OIDC Discovery at the standard,
+  #                path-prefixed, and path-suffixed URL variants MCP clients probe.
+  authType: "keycloak"
 
   # REQUIRED: OIDC Issuer URL (base URL of your identity provider).
   # For Keycloak, this is the realm URL.

@@ -20,8 +20,9 @@ Usage:
 """
 
 from typing import Dict, List, Optional, Tuple
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
+import hashlib
 import threading
 
 
@@ -32,6 +33,15 @@ class Artifact:
     mime_type: str
     created_at: datetime
     description: Optional[str] = None
+    size_bytes: int = 0
+    sha256: str = ""
+
+    def __post_init__(self) -> None:
+        encoded = self.content.encode("utf-8")
+        if not self.size_bytes:
+            self.size_bytes = len(encoded)
+        if not self.sha256:
+            self.sha256 = hashlib.sha256(encoded).hexdigest()
 
 
 class ArtifactStore:

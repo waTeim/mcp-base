@@ -15,10 +15,17 @@ Tool implementations are in mcp_base_tools.py
 """
 
 import argparse
+import base64
+import datetime
+import hashlib
+import json
 import logging
 import os
+import socket
 import sys
+import time
 from pathlib import Path
+from typing import Any, Dict, Optional
 
 from fastmcp import FastMCP
 from starlette.middleware.base import BaseHTTPMiddleware
@@ -38,6 +45,10 @@ logger = logging.getLogger(__name__)
 
 # Suppress noisy loggers
 logging.getLogger("httpx").setLevel(logging.WARNING)
+# FastMCP's auth loggers emit INFO lines that duplicate info our request
+# middleware already logs (token rejection reason, 401 invalid_token). Keep
+# WARNING+ so real problems still surface.
+logging.getLogger("fastmcp.server.auth").setLevel(logging.WARNING)
 
 # Custom filter to exclude health check endpoints from access logs
 class HealthCheckFilter(logging.Filter):
@@ -56,68 +67,82 @@ You are an MCP server construction assistant. You help AI agents build
 production-ready MCP servers for Kubernetes environments.
 
 ========================================================================
-CRITICAL: PHASE 2 IS IMPOSSIBLE UNTIL PHASE 1 IS COMPLETE
+SCAFFOLD RETRIEVAL CONTRACT (resource-first)
 ========================================================================
 
-This is not advice. It is a logical dependency:
-- You cannot customize files that don't exist on disk
-- You cannot test a server without test-mcp.py written
-- You cannot build a container without Dockerfile written
-- Artifacts EXPIRE after a short time - retrieve them NOW or lose them
+`generate_server_scaffold` returns a COMPACT manifest — no file bytes
+are returned in tool output. Bulk byte transfer is a resource operation.
 
-Phase 2 (customization) is UNDEFINED until Phase 1 (retrieval) is verified complete.
-Treat Phase 2 work as impossible, not just inadvisable, until then.
+  Primary (bulk bytes):
+      resources/read("scaffold://{project_id}/{path}")
+      → Returns exact file bytes. Verify against artifacts[i].sha256.
 
-========================================================================
-PHASE 1: SCAFFOLD RETRIEVAL (MECHANICAL - NO CREATIVITY)
-========================================================================
+  Primary (coordination metadata — no file contents):
+      list_scaffold_artifact_metadata(project_id)
+      read_scaffold_artifact_metadata(project_id, path)
+      → role, customization_relevance, summary, symbols, notes.
 
-This phase is MECHANICAL work. Think: copy machine, not architect.
+  LAST-RESORT fallback (DO NOT use if resources/read is available):
+      read_scaffold_artifact(project_id, path)
+      → Full bytes in tool output — pulls every byte into model
+        context. Reserved for tool-only proxy aggregators that drop
+        resources entirely (e.g. OpenAI's codex_apps). If your client
+        supports resources/read, using this tool is a bug.
 
-Step 1: Generate scaffold
-   result = generate_server_scaffold(server_name="My Server")
-   project_id = result["project_id"]
-   files_list = result["files"]  # e.g., 34 files
-   expected_count = result["file_count"]
-
-Step 2: Retrieve and write EVERY file (no exceptions)
-   for each file_path in files_list:
-       content = resources/read(uri=f"scaffold://{project_id}/{file_path}")
-       write content to ./file_path (EXACT content, no modifications)
-
-Step 3: Verify file count BEFORE proceeding
-   actual_count = count files written to disk
-   assert actual_count == expected_count
-
-ARTIFACTS EXPIRE. Do not pause, do not get distracted, do not skip files.
-Complete this loop NOW. Every file. No exceptions.
+HARD GATE — INVARIANT: every on-disk file must be byte-identical to the
+stored artifact (verify via sha256). On ANY retrieval failure, STOP and
+produce SCAFFOLD_RETRIEVAL_FAILURE.md (template in the
+`failure_report_template` field of the scaffold response). Do NOT:
+  - Reconstruct from memory
+  - Render templates as a substitute (`render_template` is NOT a fallback)
+  - Create placeholder files
+  - Infer contents from filenames
+  - Continue to customization with a partial scaffold
+  - Produce SCAFFOLD_INVENTORY.md unless retrieval is 100% verified.
 
 ========================================================================
-PHASE 1 VERIFICATION (REQUIRED GATE)
+INTENDED AGENT WORKFLOW
 ========================================================================
 
-You CANNOT proceed to Phase 2 until you verify:
-[ ] actual_count == expected_count (e.g., 34 == 34)
-[ ] All files from files_list exist on disk
-[ ] No custom content written yet
+1. result = generate_server_scaffold(server_name="My Server")
+   → {project_id, file_count, artifacts, retrieval_contract, workflow}
+2. For each entry in result["artifacts"]:
+      bytes = resources/read(entry["uri"])
+      write bytes to ./<entry["path"]>
+      assert sha256(bytes) == entry["sha256"]
+3. If all hashes match → create SCAFFOLD_INVENTORY.md locally.
+   If any fail → STOP, write SCAFFOLD_RETRIEVAL_FAILURE.md, do not customize.
+4. Inspect only files with customization_relevance in {"high","medium"};
+   use read_scaffold_artifact_metadata for symbols/notes first.
+5. Customize locally; chmod +x bin/*; python bin/configure-make.py;
+   make build && make push && make helm-install.
 
-If verification fails, you failed. Start over with a new scaffold.
+For tool-only proxy clients (resources not forwarded by the proxy):
+- Still call list_scaffold_artifact_metadata for coordination.
+- Fall back to read_scaffold_artifact for byte transfer (accepts the
+  context-bloat cost). The hash-verification gate is unchanged.
 
 ========================================================================
-PHASE 2: CUSTOMIZATION (IMPOSSIBLE UNTIL PHASE 1 VERIFIED)
+TOOLS
 ========================================================================
 
-Only after verification passes:
-- Customize the *_tools.py file for your specific functionality
-- Add any additional dependencies to requirements.txt
-- Modify Helm values as needed
+- generate_server_scaffold: Create project (returns compact manifest)
+- list_scaffold_artifact_metadata: Compact metadata for all artifacts
+- read_scaffold_artifact_metadata: Detailed metadata for one artifact
+- read_scaffold_artifact: LAST-RESORT FALLBACK — full bytes in tool
+    output. Do NOT use if resources/read is available.
+- list_artifacts: Lightweight path + URI listing
+- render_template: Render individual templates (NOT a scaffold substitute)
+- list_templates / list_patterns / get_pattern: Discovery
 
-Available tools:
-- generate_server_scaffold: Create complete server project structure
-- list_artifacts: List all files in a scaffold project
-- render_template: Render individual templates with parameters
-- list_templates: List available templates
-- get_pattern: Get pattern documentation
+========================================================================
+RESOURCES
+========================================================================
+
+- scaffold://{project_id}/{path} — Concrete per-artifact resource
+  (registered at generate_server_scaffold time; primary byte path)
+- artifact://{project_id}/{path} — Alias for legacy clients
+- template://... and pattern://... — Templates and pattern docs
 
 NOTE: Utility scripts are available via the mcp-base CLI:
   pip install mcp-base
@@ -133,6 +158,99 @@ from mcp_base_tools import register_resources
 
 register_resources(mcp)
 register_tools(mcp)
+
+# ============================================================================
+# Auth diagnostic logging
+# ============================================================================
+#
+# Decode-only inspection of incoming bearer JWTs for diagnosing client
+# re-auth churn after pod restarts. We don't verify here — FastMCP's
+# JWTVerifier still does that. This just surfaces enough of the token to
+# distinguish three failure modes on a redeploy:
+#   1. Token expired during idle window (benign, client should refresh).
+#   2. Codex rotated to a brand-new token fingerprint (re-auth loop).
+#   3. Same token, now rejected (JWKS rotation / audience mismatch).
+#
+# Never logs the token itself — only sub/jti/aud/iss, an expiry delta, a
+# short sha256 fingerprint of the raw token, and the granted scopes.
+
+def _inspect_bearer_token(auth_header: Optional[str]) -> Optional[Dict[str, Any]]:
+    """Return a compact summary of a Bearer JWT's claims, or None."""
+    if not auth_header or not auth_header.lower().startswith("bearer "):
+        return None
+    token = auth_header.split(None, 1)[1].strip()
+    parts = token.split(".")
+    if len(parts) != 3:
+        return None
+    payload_b64 = parts[1]
+    padding = "=" * (-len(payload_b64) % 4)
+    try:
+        payload = json.loads(base64.urlsafe_b64decode(payload_b64 + padding))
+    except Exception:
+        return None
+    scope = payload.get("scope") or payload.get("scp") or ""
+    scopes = scope if isinstance(scope, list) else scope.split()
+    exp = payload.get("exp")
+    iat = payload.get("iat")
+    now = int(time.time())
+    exp_int = int(exp) if isinstance(exp, (int, float)) else None
+    iat_int = int(iat) if isinstance(iat, (int, float)) else None
+    lifespan = (exp_int - iat_int) if (exp_int is not None and iat_int is not None) else None
+    age = (now - iat_int) if iat_int is not None else None
+    return {
+        "sub": payload.get("sub"),
+        "jti": payload.get("jti"),
+        "aud": payload.get("aud"),
+        "iss": payload.get("iss"),
+        "azp": payload.get("azp"),
+        "sid": payload.get("sid") or payload.get("session_state"),
+        "exp": exp_int,
+        "exp_delta": (exp_int - now) if exp_int is not None else None,
+        "iat": iat_int,
+        "age": age,
+        "lifespan": lifespan,
+        "scopes": scopes,
+        "token_fp": hashlib.sha256(token.encode()).hexdigest()[:10],
+    }
+
+
+def _humanize_seconds(s: int) -> str:
+    s = abs(int(s))
+    if s < 60:
+        return f"{s}s"
+    if s < 3600:
+        return f"{s // 60}m {s % 60}s"
+    h, rem = divmod(s, 3600)
+    return f"{h}h {rem // 60}m"
+
+
+# Expiry age above which we assume the client's refresh flow is broken
+# rather than "just barely stale." Keycloak's default access-token
+# lifespan is 5 min; a well-behaved client refreshes long before 15 min.
+_REFRESH_BROKEN_THRESHOLD_SEC = 15 * 60
+
+
+def _format_exp_delta(delta: Optional[int]) -> str:
+    if delta is None:
+        return "?"
+    if delta < 0:
+        tail = "  ⚠️  refresh likely broken" if -delta > _REFRESH_BROKEN_THRESHOLD_SEC else ""
+        return f"EXPIRED {_humanize_seconds(-delta)} ago{tail}"
+    return f"valid for {_humanize_seconds(delta)}"
+
+
+def _split_www_authenticate(header: str) -> list:
+    """Split 'Bearer error="...", scope="...", resource_metadata="..."'
+    into its individual key=value parts, tolerating commas inside quoted
+    strings.
+    """
+    if not header:
+        return []
+    import re
+    # Split on ", " only when it precedes a bare word= (i.e. a new field),
+    # not inside a quoted value.
+    return re.split(r',\s+(?=[A-Za-z_]+=)', header)
+
 
 # ============================================================================
 # Server Entry Point
@@ -189,16 +307,41 @@ def run_http_transport(port: int = 4208, host: str = "0.0.0.0"):
     # Add request logging middleware with MCP message inspection
     class RequestLoggingMiddleware(BaseHTTPMiddleware):
         async def dispatch(self, request: Request, call_next):
-            # Log all non-health-check requests with MCP details
-            if request.url.path not in ["/health", "/healthz", "/readyz"]:
+            skip = request.url.path in ["/health", "/healthz", "/readyz"]
+            if not skip:
                 mcp_details = await self._extract_mcp_details(request)
-                logger.info(f"🌐 HTTP {request.method} {request.url.path}{mcp_details}")
+                lines = [f"🌐 HTTP {request.method} {request.url.path}{mcp_details}"]
+                claims = _inspect_bearer_token(request.headers.get("authorization"))
+                if claims is not None:
+                    age_str = (
+                        f"{_humanize_seconds(claims['age'])}"
+                        if claims["age"] is not None else "?"
+                    )
+                    lifespan_str = (
+                        f"{_humanize_seconds(claims['lifespan'])}"
+                        if claims["lifespan"] is not None else "?"
+                    )
+                    lines += [
+                        f"             sub       = {claims['sub'] or '(none)'}",
+                        f"             azp       = {claims['azp'] or '(none)'}",
+                        f"             sid       = {claims['sid'] or '(none)'}",
+                        f"             jti       = {claims['jti'] or '(none)'}",
+                        f"             token_fp  = {claims['token_fp']}",
+                        f"             age       = {age_str}  (lifespan {lifespan_str})",
+                        f"             exp       = {_format_exp_delta(claims['exp_delta'])}",
+                        f"             scopes    = {' '.join(claims['scopes']) or '(none)'}",
+                    ]
+                logger.info("\n".join(lines))
 
             response = await call_next(request)
 
-            # Log response status for non-health-checks
-            if request.url.path not in ["/health", "/healthz", "/readyz"]:
-                logger.info(f"   ← HTTP {response.status_code}")
+            if not skip:
+                lines = [f"   ← HTTP {response.status_code}"]
+                if response.status_code in (401, 403):
+                    www_auth = response.headers.get("www-authenticate", "")
+                    for part in _split_www_authenticate(www_auth):
+                        lines.append(f"             {part}")
+                logger.info("\n".join(lines))
 
             return response
 
@@ -254,6 +397,13 @@ def run_http_transport(port: int = 4208, host: str = "0.0.0.0"):
         logger.info(f"  OAuth Discovery: /.well-known/oauth-authorization-server")
         logger.info(f"  Client Registration: /register")
     logger.info("  Tools: MCP server construction tools")
+    logger.info(
+        "🟢 pod start: host=%s pid=%d start_ts=%sZ auth_type=%s",
+        socket.gethostname(),
+        os.getpid(),
+        datetime.datetime.utcnow().isoformat(timespec="seconds"),
+        auth_type,
+    )
     logger.info("=" * 80)
     logger.info("")
     logger.info("To get an MCP token:")

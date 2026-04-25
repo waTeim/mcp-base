@@ -339,37 +339,98 @@ prompts:
 - `admin_reload_prompts`: Trigger hot-reload from ConfigMap
 - `admin_get_prompt_manifest`: Get version/hash for caching
 
-### 8. Artifact Retrieval Architecture
+### 8. Artifact Retrieval Architecture (Resource-First)
 
-Generated scaffolds are stored as in-memory artifacts and exposed via
-`scaffold://{project_id}/{path}` resources. The retrieval flow is:
+Generated scaffolds are stored as in-memory artifacts (see
+`src/artifact_store.py`, which derives `size_bytes` and `sha256` at
+store time). The retrieval surface is **resource-first**: bulk file
+bytes flow through MCP resources; tools return only compact
+coordination metadata. This keeps artifact contents out of the model
+context and reserves tool output for structured decision-making data.
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│              Artifact Retrieval Flow                         │
-├─────────────────────────────────────────────────────────────┤
-│                                                              │
-│  1. Agent generates scaffold                                 │
-│     generate_server_scaffold(...) → project_id              │
-│                                                              │
-│  2. Agent lists files                                        │
-│     list_artifacts(project_id) → paths + scaffold URIs       │
-│                                                              │
-│  3. Agent reads files                                        │
-│     resources/read("scaffold://{project_id}/{path}")         │
-│                                                              │
-│  4. Agent writes files to disk                               │
-│                                                              │
-└─────────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────┐
+│              Scaffold Retrieval Flow (resource-first)             │
+├──────────────────────────────────────────────────────────────────┤
+│                                                                    │
+│  1. Agent generates scaffold                                       │
+│     generate_server_scaffold(...) →                                │
+│       { project_id, file_count,                                    │
+│         artifacts: [{ path, uri, sha256, mime_type,                │
+│                       role, customization_relevance, summary }],   │
+│         retrieval_contract, workflow,                              │
+│         failure_report_template }                                  │
+│     (NO file contents in the tool response)                        │
+│                                                                    │
+│  2. Per-artifact concrete MCP TextResource is registered at        │
+│     scaffold://{project_id}/{path} (appears in resources/list).    │
+│                                                                    │
+│  3. PRIMARY — bulk bytes via MCP resources:                        │
+│     resources/read("scaffold://{project_id}/{path}")               │
+│     Agent verifies sha256 against the manifest before writing.     │
+│                                                                    │
+│  4. PRIMARY — coordination metadata (no file contents):            │
+│     list_scaffold_artifact_metadata(project_id)                    │
+│     read_scaffold_artifact_metadata(project_id, path)              │
+│                                                                    │
+│  5. LAST-RESORT fallback (tool-only proxy clients only):           │
+│     read_scaffold_artifact(project_id, path)                       │
+│     Returns full bytes in tool output → context bloat.             │
+│     DO NOT USE if resources/read is available.                     │
+│                                                                    │
+└──────────────────────────────────────────────────────────────────┘
 ```
 
-**Notes:**
-- `resources/read` returns full file content, so large files can consume
-  context. Prefer targeted reads and avoid loading unnecessary files.
+**Why resource-first:**
+- MCP resources are the correct abstraction for bulk byte transfer.
+  `resources/read` lets a client write bytes directly to disk without
+  the payload entering the model's context window.
+- MCP tools are the correct abstraction for coordination metadata.
+  Compact manifests (`role`, `customization_relevance`, `summary`,
+  `symbols`, `sha256`) let the agent decide *what* to read locally
+  before pulling any bytes.
+- Separation of concerns: `generate_server_scaffold` returns a manifest
+  only. No primary workflow requires full artifact bytes to pass through
+  tool output.
 
-**Tools Provided:**
-1. `list_artifacts(project_id)` - List all files in generated project
-2. `resources/read` - Read `scaffold://{project_id}/{path}` to fetch file content
+**Why concrete resource registration (not just a URI template):**
+- Many MCP aggregators do not forward RFC 6570 resource templates, so a
+  pure template-based registration disappears from `resources/list`.
+- `generate_server_scaffold` calls `mcp.add_resource(TextResource(...))`
+  for every generated file so each scaffold URI is directly addressable.
+- A `scaffold://{project_id}/{path*}` URI template (and an
+  `artifact://{project_id}/{path*}` alias) is also registered as a
+  fallback for clients that *do* support resource templates.
+
+**Integrity gate:**
+- Every manifest entry has a `sha256`. The agent must verify every
+  retrieved file's hash before writing to disk.
+- On ANY retrieval failure or hash mismatch, the agent produces
+  `SCAFFOLD_RETRIEVAL_FAILURE.md` (a ready-to-fill template is returned
+  in the `failure_report_template` field of the manifest) and halts.
+  No reconstruction, no template rendering as substitute, no
+  placeholders.
+
+**Tool-only proxy caveat:**
+- Some MCP aggregators — notably OpenAI's `codex_apps` — forward only
+  tools and drop resources and prompts entirely. For these clients the
+  agent has no choice but to fall back to `read_scaffold_artifact`,
+  accepting the context-bloat cost. This path is the reason the
+  fallback exists at all; it is not a convenience for other clients.
+  The sha256 integrity gate is unchanged.
+
+**APIs Provided:**
+1. Tools (metadata / fallback):
+   - `generate_server_scaffold(...)` — compact manifest (no file contents)
+   - `list_scaffold_artifact_metadata(project_id)` — per-artifact metadata
+   - `read_scaffold_artifact_metadata(project_id, path)` — detailed metadata
+   - `list_artifacts(project_id)` — `{path, uri}` pairs + retrieval contract
+   - `read_scaffold_artifact(project_id, path)` — **last-resort fallback**
+     for tool-only proxies; full bytes in tool output
+2. Resources (primary bulk-bytes path):
+   - `scaffold://{project_id}/{path}` — concrete per-artifact `TextResource`
+   - `artifact://{project_id}/{path}` — alias for legacy clients
+   - URI-template fallbacks for the same patterns
 
 ### 9. Test Plugin Architecture
 

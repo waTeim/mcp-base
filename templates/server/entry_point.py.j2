@@ -26,8 +26,14 @@ from starlette.responses import JSONResponse
 # Import tool and resource registration from tools module
 from {{ server_name_snake }}_tools import register_tools, register_resources
 
-# Auth type: {{ auth_type | default('auth0') }}
-AUTH_TYPE = "{{ auth_type | default('auth0') }}"
+# Build-time default — used only when neither the mounted oidc.yaml nor the
+# OIDC_AUTH_TYPE env var supplies a value. The actual auth_type used at
+# runtime is resolved by _resolve_auth_type() below so the helm chart's
+# `oidc.authType` (which renders into the mounted ConfigMap) controls which
+# branch runs, and a build-time/runtime mismatch surfaces as a warning
+# instead of a silent wrong-branch dispatch.
+_AUTH_TYPE_BUILD_DEFAULT = "{{ auth_type | default('auth0') }}"
+_VALID_AUTH_TYPES = ("auth0", "keycloak", "oidc")
 
 # Configure logging
 logging.basicConfig(
@@ -36,6 +42,65 @@ logging.basicConfig(
     handlers=[logging.StreamHandler(sys.stderr)]
 )
 logger = logging.getLogger(__name__)
+
+
+def _resolve_auth_type() -> str:
+    """Pick the auth_type that drives transport dispatch.
+
+    Resolution order (highest priority first):
+      1. `auth_type` field in the mounted oidc.yaml ConfigMap
+      2. `OIDC_AUTH_TYPE` environment variable
+      3. The build-time default baked in by the scaffold generator
+
+    Logs the chosen value and its source. Logs a WARNING when the runtime
+    value differs from the build-time default, since that historically
+    caused silent wrong-branch dispatch (e.g. helm chart deploys
+    `authType: keycloak` but the entry point was generated with
+    `auth_type: oidc` and runs the wrong transport).
+    """
+    # Late import — auth_oidc / auth_fastmcp both expose this helper, and
+    # they're only safe to import once their dependencies are installed.
+    try:
+        from auth_oidc import load_oidc_config_from_file
+    except ImportError:
+        try:
+            from auth_fastmcp import load_oidc_config_from_file
+        except ImportError:
+            load_oidc_config_from_file = None  # type: ignore[assignment]
+
+    config_value = None
+    if load_oidc_config_from_file is not None:
+        try:
+            config = load_oidc_config_from_file() or {}
+            config_value = config.get("auth_type")
+        except Exception as e:
+            logger.warning(f"Could not load oidc.yaml to read auth_type: {e}")
+
+    env_value = os.getenv("OIDC_AUTH_TYPE")
+
+    if config_value:
+        chosen, source = config_value, "oidc.yaml"
+    elif env_value:
+        chosen, source = env_value, "OIDC_AUTH_TYPE env"
+    else:
+        chosen, source = _AUTH_TYPE_BUILD_DEFAULT, "build-time default"
+
+    if chosen not in _VALID_AUTH_TYPES:
+        raise ValueError(
+            f"Invalid auth_type {chosen!r} from {source}. "
+            f"Expected one of {_VALID_AUTH_TYPES}."
+        )
+
+    logger.info(f"🔐 auth_type = {chosen!r} (source: {source})")
+    if chosen != _AUTH_TYPE_BUILD_DEFAULT:
+        logger.warning(
+            f"⚠️  Runtime auth_type {chosen!r} differs from build-time "
+            f"default {_AUTH_TYPE_BUILD_DEFAULT!r}. The runtime value wins, "
+            f"but if you also customized {{ server_name_snake }}_tools.py or "
+            f"chart templates for {_AUTH_TYPE_BUILD_DEFAULT!r}, regenerate "
+            f"the scaffold with --auth-type {chosen} to keep them aligned."
+        )
+    return chosen
 
 # Suppress noisy loggers
 logging.getLogger("httpx").setLevel(logging.WARNING)
@@ -89,7 +154,7 @@ async def readiness_check(request):
 
 def run_http_transport_auth0(host: str, port: int):
     """Run server in HTTP mode with FastMCP Auth0 OAuth Proxy."""
-    from auth_fastmcp import create_auth0_oauth_proxy, get_auth_config_summary, load_oidc_config_from_file
+    from auth_fastmcp import create_auth0_oauth_proxy, get_auth0_config_summary, load_oidc_config_from_file
 
     logger.info("Initializing FastMCP Auth0 OAuth Proxy...")
 
@@ -104,7 +169,7 @@ def run_http_transport_auth0(host: str, port: int):
     auth_proxy = create_auth0_oauth_proxy()
 
     # Log configuration summary
-    config_summary = get_auth_config_summary(issuer, audience, client_id, public_url)
+    config_summary = get_auth0_config_summary(issuer, audience, client_id, public_url)
     logger.info("=" * 80)
     logger.info("FastMCP Auth0 OAuth Configuration:")
     logger.info("=" * 80)
@@ -173,7 +238,7 @@ def run_http_transport_keycloak(host: str, port: int):
     Client Registration natively (requires Keycloak >= 26.6.0), so no
     client_id/client_secret, JWT signing key, or Redis storage is needed.
     """
-    from auth_fastmcp import create_keycloak_auth_provider, get_auth_config_summary, load_oidc_config_from_file
+    from auth_fastmcp import create_keycloak_auth_provider, get_keycloak_config_summary, load_oidc_config_from_file
 
     logger.info("Initializing FastMCP Keycloak Auth Provider...")
 
@@ -191,7 +256,7 @@ def run_http_transport_keycloak(host: str, port: int):
 
     auth_provider = create_keycloak_auth_provider()
 
-    config_summary = get_auth_config_summary(realm_url.rstrip("/"), audience, public_url)
+    config_summary = get_keycloak_config_summary(realm_url.rstrip("/"), audience, public_url)
     logger.info("=" * 80)
     logger.info("FastMCP Keycloak Configuration:")
     logger.info("=" * 80)
@@ -317,12 +382,12 @@ def run_http_transport_oidc(host: str, port: int):
 
 def run_http_transport(host: str, port: int):
     """Run server in HTTP mode with configured authentication."""
-    if AUTH_TYPE == "keycloak":
+    auth_type = _resolve_auth_type()
+    if auth_type == "keycloak":
         run_http_transport_keycloak(host, port)
-    elif AUTH_TYPE == "oidc":
+    elif auth_type == "oidc":
         run_http_transport_oidc(host, port)
     else:
-        # Default to Auth0
         run_http_transport_auth0(host, port)
 
 
