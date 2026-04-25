@@ -45,6 +45,10 @@ logger = logging.getLogger(__name__)
 
 # Suppress noisy loggers
 logging.getLogger("httpx").setLevel(logging.WARNING)
+# FastMCP's auth loggers emit INFO lines that duplicate info our request
+# middleware already logs (token rejection reason, 401 invalid_token). Keep
+# WARNING+ so real problems still surface.
+logging.getLogger("fastmcp.server.auth").setLevel(logging.WARNING)
 
 # Custom filter to exclude health check endpoints from access logs
 class HealthCheckFilter(logging.Filter):
@@ -187,15 +191,24 @@ def _inspect_bearer_token(auth_header: Optional[str]) -> Optional[Dict[str, Any]
     scope = payload.get("scope") or payload.get("scp") or ""
     scopes = scope if isinstance(scope, list) else scope.split()
     exp = payload.get("exp")
+    iat = payload.get("iat")
     now = int(time.time())
+    exp_int = int(exp) if isinstance(exp, (int, float)) else None
+    iat_int = int(iat) if isinstance(iat, (int, float)) else None
+    lifespan = (exp_int - iat_int) if (exp_int is not None and iat_int is not None) else None
+    age = (now - iat_int) if iat_int is not None else None
     return {
         "sub": payload.get("sub"),
         "jti": payload.get("jti"),
         "aud": payload.get("aud"),
         "iss": payload.get("iss"),
         "azp": payload.get("azp"),
-        "exp": exp,
-        "exp_delta": (int(exp) - now) if isinstance(exp, (int, float)) else None,
+        "sid": payload.get("sid") or payload.get("session_state"),
+        "exp": exp_int,
+        "exp_delta": (exp_int - now) if exp_int is not None else None,
+        "iat": iat_int,
+        "age": age,
+        "lifespan": lifespan,
         "scopes": scopes,
         "token_fp": hashlib.sha256(token.encode()).hexdigest()[:10],
     }
@@ -300,11 +313,21 @@ def run_http_transport(port: int = 4208, host: str = "0.0.0.0"):
                 lines = [f"🌐 HTTP {request.method} {request.url.path}{mcp_details}"]
                 claims = _inspect_bearer_token(request.headers.get("authorization"))
                 if claims is not None:
+                    age_str = (
+                        f"{_humanize_seconds(claims['age'])}"
+                        if claims["age"] is not None else "?"
+                    )
+                    lifespan_str = (
+                        f"{_humanize_seconds(claims['lifespan'])}"
+                        if claims["lifespan"] is not None else "?"
+                    )
                     lines += [
                         f"             sub       = {claims['sub'] or '(none)'}",
                         f"             azp       = {claims['azp'] or '(none)'}",
+                        f"             sid       = {claims['sid'] or '(none)'}",
                         f"             jti       = {claims['jti'] or '(none)'}",
                         f"             token_fp  = {claims['token_fp']}",
+                        f"             age       = {age_str}  (lifespan {lifespan_str})",
                         f"             exp       = {_format_exp_delta(claims['exp_delta'])}",
                         f"             scopes    = {' '.join(claims['scopes']) or '(none)'}",
                     ]
