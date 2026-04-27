@@ -165,8 +165,33 @@ class NoAuthMiddleware(BaseHTTPMiddleware):
         return await call_next(request)
 
 
+def _install_clean_shutdown_handlers() -> None:
+    """
+    Install SIGTERM/SIGINT handlers that perform a normal sys.exit so atexit
+    hooks (notably coverage.py's data-save hook) get to run.
+
+    uvicorn captures these as the "original" handlers in its
+    `capture_signals()` context, overrides them while serving, and on
+    shutdown restores + re-raises the captured signal — at which point our
+    handler runs sys.exit(0), the process exits cleanly, and atexit fires.
+
+    Without this, uvicorn restores Python's default handler and the re-raised
+    signal terminates the process with exit 128+sig and skips atexit, which
+    causes `coverage run` to write no data file.
+    """
+    import signal
+
+    def _exit(signum: int, _frame) -> None:
+        sys.exit(0)
+
+    signal.signal(signal.SIGTERM, _exit)
+    signal.signal(signal.SIGINT, _exit)
+
+
 def main():
     """Main entry point for the test server."""
+    _install_clean_shutdown_handlers()
+
     parser = argparse.ArgumentParser(
         description="MCP Base MCP Test Server (OIDC Auth or No-Auth mode)"
     )

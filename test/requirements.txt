@@ -1,0 +1,5 @@
+# Test-only dependencies (NOT installed into the production container).
+# Install with: pip install -r test/requirements.txt
+
+# Line/branch coverage for the test server.
+coverage[toml]>=7.0

@@ -19,7 +19,7 @@ import socket
 import subprocess
 import time
 from pathlib import Path
-from typing import List, Optional, Dict, Any, Tuple
+from typing import List, Optional, Any, Tuple
 from datetime import datetime
 
 
@@ -211,88 +211,6 @@ class LoggingSessionWrapper:
     def __getattr__(self, name):
         """Forward other attributes to the wrapped session."""
         return getattr(self._session, name)
-
-
-def get_user_token_interactive() -> Optional[str]:
-    """
-    Get user token by running get-user-token.py script.
-
-    This will open a browser for Auth0 login and return the token.
-
-    Returns:
-        Access token or None if failed
-    """
-    print()
-    print("=" * 70)
-    print(Colors.blue("🔐 USER AUTHENTICATION REQUIRED"))
-    print("=" * 70)
-    print()
-    print("The MCP server requires the 'openid' scope, which needs user login.")
-    print("Running get-user-token.py to authenticate...")
-    print()
-
-    # Run get-user-token.py
-    script_path = Path(__file__).parent / "get-user-token.py"
-
-    try:
-        result = subprocess.run(
-            [sys.executable, str(script_path)],
-            capture_output=False,  # Let it interact with user
-            text=True
-        )
-
-        if result.returncode != 0:
-            print()
-            print(Colors.red("❌ User authentication failed"))
-            return None
-
-        # Token should be saved to /tmp/user-token.txt
-        token_file = Path("/tmp/user-token.txt")
-        if token_file.exists():
-            token = token_file.read_text().strip()
-            print()
-            print(Colors.green("✅ User token obtained successfully"))
-            return token
-        else:
-            print()
-            print(Colors.red("❌ Token file not found after authentication"))
-            return None
-
-    except Exception as e:
-        print(Colors.red(f"❌ Error running get-user-token.py: {e}"))
-        return None
-
-
-def load_auth0_config(config_path: str = "auth0-config.json") -> Optional[Dict[str, Any]]:
-    """Load Auth0 configuration from file."""
-    config_file = Path(config_path)
-    if not config_file.exists():
-        return None
-
-    try:
-        with open(config_file, 'r') as f:
-            return json.load(f)
-    except Exception as e:
-        print(Colors.yellow(f"Warning: Failed to load {config_path}: {e}"))
-        return None
-
-
-def get_token_from_auth0(config: Dict[str, Any]) -> Optional[str]:
-    """
-    Get an access token using user authentication (Authorization Code + PKCE).
-
-    This simulates the same flow that Claude Desktop uses when connecting to the MCP server.
-
-    Args:
-        config: Auth0 configuration dictionary
-
-    Returns:
-        Access token or None if failed
-    """
-    # User authentication is required - same flow as Claude Desktop
-    print(Colors.blue("Using user authentication (same as Claude Desktop)"))
-    print()
-    return get_user_token_interactive()
 
 
 def topological_sort_plugins(plugins: List) -> List:
@@ -857,12 +775,11 @@ Environment Variables:
 
     args = parser.parse_args()
 
-    # Get authentication token with priority:
-    # 1. --no-auth flag skips all authentication
-    # 2. Token file via --token-file
-    # 3. Auto-obtain from auth0-config.json
+    # Auth resolution. The mcp-base test sidecar runs --no-auth, so the
+    # default flow is no-auth. --token-file is a "bring your own JWT" escape
+    # hatch for hitting an authenticated endpoint (e.g. the production
+    # server) without bundling token-acquisition logic into this runner.
     auth_token = None
-    token_source = None
 
     if args.no_auth:
         print(Colors.yellow("⚠️  Running without authentication (--no-auth)"))
@@ -871,37 +788,17 @@ Environment Variables:
         token_path = Path(args.token_file)
         if not token_path.exists():
             print(Colors.red(f"❌ Token file not found: {args.token_file}"))
-            print("   Run ./test/get-user-token.py to obtain a token")
             sys.exit(1)
         auth_token = token_path.read_text().strip()
         if not auth_token:
             print(Colors.red(f"❌ Token file is empty: {args.token_file}"))
             sys.exit(1)
-        token_source = f"file: {args.token_file}"
-        print(Colors.green(f"✅ Using token from: {token_source}"))
+        print(Colors.green(f"✅ Using token from file: {args.token_file}"))
         print()
     else:
-        # Try auto-obtain from auth0-config.json
-        auth0_config = load_auth0_config("auth0-config.json")
-
-        if auth0_config:
-            print(Colors.green("✅ Found auth0-config.json"))
-            print()
-            auth_token = get_token_from_auth0(auth0_config)
-
-            if auth_token:
-                token_source = "user authentication (Authorization Code Flow)"
-                print()
-                print(Colors.green(f"✅ Using token from: {token_source}"))
-                print()
-            else:
-                print()
-                print(Colors.red("❌ Failed to obtain authentication token"))
-                sys.exit(1)
-        else:
-            print(Colors.yellow("⚠️  No auth0-config.json found"))
-            print("   Attempting connection without authentication...")
-            print()
+        print(Colors.yellow("⚠️  No --no-auth and no --token-file; "
+                            "connecting without authentication"))
+        print()
 
     pf_cm: contextlib.AbstractContextManager
     if args.port_forward:

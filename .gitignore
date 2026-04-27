@@ -11,6 +11,12 @@ token.txt
 *.tgz
 tmp
 results.json
+
+# Coverage artifacts
+.coverage
+.coverage.*
+coverage-html/
+htmlcov/
 Chart.lock
 chart/charts/*
 

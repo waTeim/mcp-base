@@ -190,6 +190,18 @@ dev-test-debug: ## Run tests with debug logging against local no-auth server
 	@echo ""
 	@echo "Debug log saved to: /tmp/mcp-debug.log"
 
+.PHONY: dev-coverage
+dev-coverage: ## Run the test suite under coverage and print a report
+	python test/run-coverage.py
+
+.PHONY: dev-coverage-html
+dev-coverage-html: ## Run dev-coverage and also write coverage-html/index.html
+	python test/run-coverage.py --html
+
+.PHONY: dev-deps
+dev-deps: ## Install test-only dependencies (coverage, ...)
+	pip install -r test/requirements.txt
+
 #
 # Kubernetes development targets
 #
