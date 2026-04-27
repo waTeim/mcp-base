@@ -61,12 +61,7 @@ build: make.env ## Build container image
 .PHONY: build-no-cache
 build-no-cache: make.env ## Build container image without cache
 	@echo "Building container image (no cache): $(IMAGE_FULL)"
-	$(CONTAINER_TOOL) build \
-		--no-cache \
-		--tag $(IMAGE_FULL) \
-		--platform $(PLATFORM) \
-		--file Dockerfile \
-		.
+	$(CONTAINER_TOOL) build --no-cache --tag $(IMAGE_FULL) --platform $(PLATFORM) --file Dockerfile .
 	@echo "✓ Built: $(IMAGE_FULL)"
 
 .PHONY: push
@@ -79,20 +74,15 @@ push: make.env ## Push container image to registry
 build-push: build push ## Build and push container image
 
 .PHONY: build-test
-build-test: make.env ## Build test server container image
-	@echo "Building test server image: $(IMAGE_FULL_TEST)"
-	$(CONTAINER_TOOL) build --tag $(IMAGE_FULL_TEST) --platform $(PLATFORM) --file Dockerfile.test .
+build-test: build ## Build test server container image (FROM main image)
+	@echo "Building test server image: $(IMAGE_FULL_TEST) (FROM $(IMAGE_FULL))"
+	$(CONTAINER_TOOL) build --tag $(IMAGE_FULL_TEST) --platform $(PLATFORM) --build-arg BASE_IMAGE=$(IMAGE_FULL) --file test/Dockerfile .
 	@echo "✓ Built: $(IMAGE_FULL_TEST)"
 
 .PHONY: build-test-no-cache
-build-test-no-cache: make.env ## Build test server image without cache
-	@echo "Building test server image (no cache): $(IMAGE_FULL_TEST)"
-	$(CONTAINER_TOOL) build \
-		--no-cache \
-		--tag $(IMAGE_FULL_TEST) \
-		--platform $(PLATFORM) \
-		--file Dockerfile.test \
-		.
+build-test-no-cache: build-no-cache ## Build test server image without cache (FROM main image)
+	@echo "Building test server image (no cache): $(IMAGE_FULL_TEST) (FROM $(IMAGE_FULL))"
+	$(CONTAINER_TOOL) build --no-cache --tag $(IMAGE_FULL_TEST) --platform $(PLATFORM) --build-arg BASE_IMAGE=$(IMAGE_FULL) --file test/Dockerfile .
 	@echo "✓ Built: $(IMAGE_FULL_TEST)"
 
 .PHONY: build-all
@@ -112,20 +102,14 @@ test-image: make.env ## Test main server image locally
 	@echo "Testing container image: $(IMAGE_FULL)"
 	@echo "Starting container in HTTP mode..."
 	@echo "Press Ctrl+C to stop"
-	$(CONTAINER_TOOL) run --rm -it \
-		-p 8000:8000 \
-		--name mcp-base-test \
-		$(IMAGE_FULL)
+	$(CONTAINER_TOOL) run --rm -it -p 8000:8000 --name mcp-base-test $(IMAGE_FULL)
 
 .PHONY: test-image-test
 test-image-test: make.env ## Test test server image locally
 	@echo "Testing test server image: $(IMAGE_FULL_TEST)"
 	@echo "Starting test server container..."
 	@echo "Press Ctrl+C to stop"
-	$(CONTAINER_TOOL) run --rm -it \
-		-p 8001:8001 \
-		--name mcp-base-test-sidecar \
-		$(IMAGE_FULL_TEST)
+	$(CONTAINER_TOOL) run --rm -it -p 8001:8001 --name mcp-base-test-sidecar $(IMAGE_FULL_TEST)
 
 #
 # Helm chart targets
@@ -139,30 +123,18 @@ helm-lint: ## Lint Helm chart
 .PHONY: helm-template
 helm-template: ## Render Helm chart templates
 	@echo "Rendering Helm chart templates..."
-	helm template $(HELM_RELEASE) chart/ \
-		--namespace $(HELM_NAMESPACE) \
-		--set image.repository=$(REGISTRY)/$(IMAGE_NAME) \
-		--set image.tag=$(TAG)
+	helm template $(HELM_RELEASE) chart/ --namespace $(HELM_NAMESPACE) --set image.repository=$(REGISTRY)/$(IMAGE_NAME) --set image.tag=$(TAG)
 
 .PHONY: helm-install
 helm-install: make.env ## Install Helm chart
 	@echo "Installing Helm chart: $(HELM_RELEASE)"
-	helm upgrade --install $(HELM_RELEASE) chart/ \
-		--namespace $(HELM_NAMESPACE) \
-		--create-namespace \
-		--set image.repository=$(REGISTRY)/$(IMAGE_NAME) \
-		--set image.tag=$(TAG) \
-		--wait
+	helm upgrade --install $(HELM_RELEASE) chart/ --namespace $(HELM_NAMESPACE) --create-namespace --set image.repository=$(REGISTRY)/$(IMAGE_NAME) --set image.tag=$(TAG) --wait
 	@echo "✓ Installed: $(HELM_RELEASE) in namespace $(HELM_NAMESPACE)"
 
 .PHONY: helm-upgrade
 helm-upgrade: make.env ## Upgrade Helm release
 	@echo "Upgrading Helm release: $(HELM_RELEASE)"
-	helm upgrade $(HELM_RELEASE) chart/ \
-		--namespace $(HELM_NAMESPACE) \
-		--set image.repository=$(REGISTRY)/$(IMAGE_NAME) \
-		--set image.tag=$(TAG) \
-		--wait
+	helm upgrade $(HELM_RELEASE) chart/ --namespace $(HELM_NAMESPACE) --set image.repository=$(REGISTRY)/$(IMAGE_NAME) --set image.tag=$(TAG) --wait
 	@echo "✓ Upgraded: $(HELM_RELEASE)"
 
 .PHONY: helm-uninstall
@@ -208,7 +180,7 @@ dev-local: ## Start test server in no-auth mode (local development)
 .PHONY: dev-test
 dev-test: ## Run tests against local no-auth server
 	@echo "Running tests against local no-auth server..."
-	python test/test-mcp.py --url http://localhost:8001/test --no-auth
+	python test/test-mcp.py --url http://localhost:8001/test --no-auth --port-forward mcp-base
 
 .PHONY: dev-test-debug
 dev-test-debug: ## Run tests with debug logging against local no-auth server

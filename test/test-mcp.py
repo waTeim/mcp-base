@@ -11,11 +11,15 @@ import sys
 import json
 import argparse
 import asyncio
+import contextlib
 import importlib
 import inspect
+import re
+import socket
 import subprocess
+import time
 from pathlib import Path
-from typing import List, Optional, Dict, Any
+from typing import List, Optional, Dict, Any, Tuple
 from datetime import datetime
 
 
@@ -613,6 +617,163 @@ async def run_automated_tests(url: str, auth_token: str = None, output_file: str
         return 1
 
 
+_PORT_FORWARD_SPEC_RE = re.compile(
+    r"""^
+    (?:(?P<namespace>[a-z0-9][a-z0-9-]*)/)?     # optional namespace/
+    (?P<service>[a-z0-9][a-z0-9-]*)              # service name
+    (?::(?P<port>\d+))?                          # optional :port
+    $""",
+    re.VERBOSE,
+)
+
+
+def parse_port_forward_spec(
+    spec: str, default_port: int = 4209
+) -> Tuple[Optional[str], str, int]:
+    """
+    Parse `[namespace/]service[:port]` into (namespace, service, port).
+
+    Namespace is None when the spec omits it — callers should let kubectl
+    resolve it from the current context rather than hard-coding "default".
+    """
+    m = _PORT_FORWARD_SPEC_RE.match(spec.strip())
+    if not m:
+        raise ValueError(
+            f"Invalid --port-forward spec: {spec!r}. "
+            f"Expected [namespace/]service[:port] (e.g. 'mcp-base', "
+            f"'kube-system/mcp-base', 'mcp-base:4209')."
+        )
+    namespace = m.group("namespace")  # None when unspecified
+    service = m.group("service")
+    port = int(m.group("port")) if m.group("port") else default_port
+    return namespace, service, port
+
+
+def _kubectl_current_namespace() -> Optional[str]:
+    """
+    Best-effort resolution of the current kubectl context's namespace, for
+    logging only. Returns None if kubectl is unavailable, no context is
+    active, or the context has no namespace set (in which case kubectl
+    itself falls back to "default").
+    """
+    try:
+        out = subprocess.run(
+            ["kubectl", "config", "view", "--minify",
+             "--output", "jsonpath={..namespace}"],
+            capture_output=True, text=True, timeout=2,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return None
+    if out.returncode != 0:
+        return None
+    ns = out.stdout.strip()
+    return ns or None
+
+
+def _pick_free_local_port() -> int:
+    """Return an unused TCP port the OS hands us."""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind(("127.0.0.1", 0))
+        return s.getsockname()[1]
+
+
+def _wait_for_local_port(port: int, timeout: float = 10.0) -> None:
+    """Block until 127.0.0.1:port accepts a connection, or raise TimeoutError."""
+    deadline = time.monotonic() + timeout
+    last_err: Optional[BaseException] = None
+    while time.monotonic() < deadline:
+        try:
+            with socket.create_connection(("127.0.0.1", port), timeout=0.5):
+                return
+        except OSError as e:
+            last_err = e
+            time.sleep(0.1)
+    raise TimeoutError(
+        f"port-forward to 127.0.0.1:{port} did not become ready within "
+        f"{timeout:.1f}s (last error: {last_err})"
+    )
+
+
+@contextlib.contextmanager
+def kubectl_port_forward(
+    spec: str,
+    local_port: Optional[int] = None,
+    timeout: float = 10.0,
+):
+    """
+    Spawn `kubectl port-forward` for the duration of the context.
+
+    Args:
+        spec: `[namespace/]service[:remote_port]`. Default port: 4209.
+        local_port: Bind to this port locally. If None, an OS-chosen free port.
+        timeout: Seconds to wait for the local port to start accepting.
+
+    Yields:
+        Tuple of (local_port, remote_port). Build URLs as
+        f"http://127.0.0.1:{local_port}/test".
+
+    The kubectl process is terminated on context exit. If kubectl itself is
+    missing or the port-forward fails, RuntimeError is raised.
+    """
+    namespace, service, remote_port = parse_port_forward_spec(spec)
+    if local_port is None:
+        local_port = _pick_free_local_port()
+
+    cmd = ["kubectl", "port-forward"]
+    if namespace is not None:
+        cmd += ["-n", namespace]
+    cmd += [f"svc/{service}", f"{local_port}:{remote_port}"]
+
+    # Resolve the effective namespace for logging only — kubectl does this
+    # itself when -n is omitted; we just want a useful log line.
+    effective_ns = namespace or _kubectl_current_namespace() or "default"
+    ns_label = (
+        namespace
+        if namespace is not None
+        else f"{effective_ns} (from current kubectl context)"
+    )
+    print(Colors.blue(f"⏩ Starting port-forward: {' '.join(cmd)}"))
+    print(Colors.blue(f"   namespace: {ns_label}"))
+
+    try:
+        proc = subprocess.Popen(
+            cmd,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+    except FileNotFoundError:
+        raise RuntimeError("kubectl not found on PATH — cannot --port-forward")
+
+    try:
+        try:
+            _wait_for_local_port(local_port, timeout=timeout)
+        except TimeoutError as e:
+            # Capture kubectl's stderr to surface the actual cause
+            stderr_tail = ""
+            if proc.poll() is not None and proc.stderr is not None:
+                stderr_tail = proc.stderr.read() or ""
+            proc.terminate()
+            raise RuntimeError(
+                f"{e}\nkubectl exit={proc.poll()} stderr={stderr_tail.strip()!r}"
+            ) from None
+
+        print(Colors.green(
+            f"✅ port-forward ready: 127.0.0.1:{local_port} → "
+            f"{effective_ns}/svc/{service}:{remote_port}"
+        ))
+        yield local_port, remote_port
+    finally:
+        if proc.poll() is None:
+            proc.terminate()
+            try:
+                proc.wait(timeout=3)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.wait()
+        print(Colors.blue("⏹  port-forward stopped"))
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="MCP Base Server Test Runner",
@@ -621,6 +782,10 @@ def main():
 Examples:
   # Run tests against local server
   ./test-mcp.py --url http://localhost:8000
+
+  # Test the in-cluster test sidecar via auto-managed kubectl port-forward
+  ./test-mcp.py --no-auth --port-forward mcp-base
+  ./test-mcp.py --no-auth --port-forward myns/mcp-base:4209
 
   # Save test results to JSON file
   ./test-mcp.py --url http://localhost:8000 --output results.json
@@ -664,6 +829,30 @@ Environment Variables:
         '--no-auth',
         action='store_true',
         help='Skip authentication (for testing against no-auth servers)'
+    )
+    parser.add_argument(
+        '--port-forward',
+        dest='port_forward',
+        metavar='[NS/]SERVICE[:PORT]',
+        help='Spawn `kubectl port-forward` against this service for the test '
+             'run, then tear it down. Namespace defaults to the current '
+             'kubectl context\'s namespace; default port: 4209 (the test '
+             'sidecar). Overrides --url with http://127.0.0.1:<local-port>/test. '
+             'Examples: mcp-base, kube-system/mcp-base, mcp-base:4209'
+    )
+    parser.add_argument(
+        '--port-forward-local-port',
+        dest='port_forward_local_port',
+        type=int,
+        default=None,
+        help='Local port for --port-forward (default: an OS-chosen free port)'
+    )
+    parser.add_argument(
+        '--port-forward-timeout',
+        dest='port_forward_timeout',
+        type=float,
+        default=10.0,
+        help='Seconds to wait for the port-forward to become ready (default: 10)'
     )
 
     args = parser.parse_args()
@@ -714,13 +903,30 @@ Environment Variables:
             print("   Attempting connection without authentication...")
             print()
 
-    exit_code = asyncio.run(run_automated_tests(
-        url=args.url,
-        auth_token=auth_token,
-        output_file=args.output_file,
-        output_format=args.output_format,
-        debug_log=args.debug_log
-    ))
+    pf_cm: contextlib.AbstractContextManager
+    if args.port_forward:
+        pf_cm = kubectl_port_forward(
+            args.port_forward,
+            local_port=args.port_forward_local_port,
+            timeout=args.port_forward_timeout,
+        )
+    else:
+        pf_cm = contextlib.nullcontext(None)
+
+    with pf_cm as pf:
+        if pf is not None:
+            local_port, _remote_port = pf
+            args.url = f"http://127.0.0.1:{local_port}/test"
+            print(Colors.blue(f"Using forwarded URL: {args.url}"))
+            print()
+
+        exit_code = asyncio.run(run_automated_tests(
+            url=args.url,
+            auth_token=auth_token,
+            output_file=args.output_file,
+            output_format=args.output_format,
+            debug_log=args.debug_log
+        ))
     sys.exit(exit_code)
 
 

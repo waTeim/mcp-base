@@ -43,16 +43,23 @@ service:
   testPort: {{ port + 1 }}
 
 # Test Sidecar Configuration
-# Enables a second container for testing using standard OIDC authentication
+# Runs the test server with --no-auth. Reachable ClusterIP-only / via
+# port-forward; never exposed through Ingress.
 testSidecar:
   # Enable test sidecar container
   enabled: false
 
-  # Image for test sidecar (defaults to main image)
+  # Image for test sidecar (defaults to main image; the test image built by
+  # `make build-test` is FROM the main image and only overrides the CMD, so
+  # leaving these empty + relying on `command`/`args` works fine).
   image:
     repository: ""  # Leave empty to use main image
     tag: ""         # Leave empty to use main image tag
     pullPolicy: ""  # Leave empty to use main image pullPolicy
+
+  # Mock identity injected by NoAuthMiddleware. Becomes both the `sub` and
+  # `preferred_username` claims; the issuer is fixed at http://localhost/no-auth.
+  identity: "test-user"
 
   # Resource limits for test sidecar
   resources: {}

@@ -1273,7 +1273,7 @@ async def list_templates_impl() -> str:
     # Container templates
     result += "## Container Templates\n"
     result += "- `container/Dockerfile.j2` - Production container build\n"
-    result += "- `container/Dockerfile.test.j2` - Test container build (no auth)\n"
+    result += "- `container/Dockerfile.test.j2` - Test container build (no auth, lands at `test/Dockerfile`, FROM main image)\n"
     result += "- `container/requirements.txt` - Python dependencies (as-is)\n\n"
 
     # Helm templates
@@ -1524,7 +1524,7 @@ async def generate_server_scaffold_impl(
     - bin/ - Configuration scripts (bin/configure-make.py)
     - chart/ - Complete Helm chart with ALL templates
     - test/ - Plugin-based test framework
-    - Dockerfile, Dockerfile.test, Makefile, requirements.txt
+    - Dockerfile, test/Dockerfile, Makefile, requirements.txt
 
     NOTE: Utility scripts (setup-oidc, add-user, etc.) are available via
     the mcp-base CLI (`pip install mcp-base`). Exception:
@@ -1598,6 +1598,7 @@ async def generate_server_scaffold_impl(
         "server_name_snake": server_name_snake,
         "server_name_kebab": server_name_kebab,
         "server_name_pascal": server_name_pascal,
+        "module_name": server_name_snake,  # used by helm/templates/deployment.yaml.j2
         "port": port,
         "default_namespace": default_namespace,
         "chart_name": chart_name,
@@ -1629,7 +1630,7 @@ async def generate_server_scaffold_impl(
     # Container files
     container_templates = [
         ("container/Dockerfile.j2", "Dockerfile"),
-        ("container/Dockerfile.test.j2", "Dockerfile.test"),
+        ("container/Dockerfile.test.j2", "test/Dockerfile"),
     ]
 
     container_static = [

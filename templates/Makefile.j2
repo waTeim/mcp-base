@@ -57,19 +57,25 @@ build-push: build push ## Build and push container image
 #
 
 .PHONY: build-test
-build-test: ## Build test container image
-	@echo "Building test container image: $(TEST_IMAGE_FULL)"
-	$(CONTAINER_TOOL) build --tag $(TEST_IMAGE_FULL) --platform $(PLATFORM) --file Dockerfile.test .
+build-test: build ## Build test container image (FROM main image)
+	@echo "Building test container image: $(TEST_IMAGE_FULL) (FROM $(IMAGE_FULL))"
+	$(CONTAINER_TOOL) build \
+		--tag $(TEST_IMAGE_FULL) \
+		--platform $(PLATFORM) \
+		--build-arg BASE_IMAGE=$(IMAGE_FULL) \
+		--file test/Dockerfile \
+		.
 	@echo "✓ Built: $(TEST_IMAGE_FULL)"
 
 .PHONY: build-test-no-cache
-build-test-no-cache: ## Build test container image without cache
-	@echo "Building test container image (no cache): $(TEST_IMAGE_FULL)"
+build-test-no-cache: build-no-cache ## Build test container image without cache (FROM main image)
+	@echo "Building test container image (no cache): $(TEST_IMAGE_FULL) (FROM $(IMAGE_FULL))"
 	$(CONTAINER_TOOL) build \
 		--no-cache \
 		--tag $(TEST_IMAGE_FULL) \
 		--platform $(PLATFORM) \
-		--file Dockerfile.test \
+		--build-arg BASE_IMAGE=$(IMAGE_FULL) \
+		--file test/Dockerfile \
 		.
 	@echo "✓ Built: $(TEST_IMAGE_FULL)"
 

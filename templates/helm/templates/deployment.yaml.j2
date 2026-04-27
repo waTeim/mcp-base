@@ -95,14 +95,26 @@ spec:
             {{- toYaml .Values.resources | nindent 12 }}
 
         {{- if .Values.testSidecar.enabled }}
-        # Test sidecar container using OIDC authentication
+        # Test sidecar container — runs the test server in --no-auth mode.
+        # Authentication is disabled; identity (sub/iss) is supplied to the
+        # NoAuthMiddleware via --identity so user_hash + mcp_context still work.
+        # The Service exposes this port as ClusterIP only and the Ingress does
+        # NOT route to it, so it is reachable only inside the cluster or via
+        # `kubectl port-forward`.
         - name: {{ .Chart.Name }}-test
           securityContext:
             {{- toYaml .Values.securityContext | nindent 12 }}
           image: '{{ .Values.testSidecar.image.repository | default .Values.image.repository }}:{{ .Values.testSidecar.image.tag | default (.Values.image.tag | default (printf "v%s" .Chart.AppVersion)) }}'
           imagePullPolicy: {{ .Values.testSidecar.image.pullPolicy | default .Values.image.pullPolicy }}
           command: ["python", "{% endraw %}{{ module_name }}{% raw %}_test_server.py"]
-          args: ["--port", "{{ .Values.service.testPort }}"]
+          args:
+            - "--no-auth"
+            - "--identity"
+            - {{ .Values.testSidecar.identity | default "test-user" | quote }}
+            - "--host"
+            - "0.0.0.0"
+            - "--port"
+            - {{ .Values.service.testPort | quote }}
           ports:
             - name: http-test
               containerPort: {{ .Values.service.testPort }}
@@ -112,16 +124,7 @@ spec:
             - name: PYTHONUNBUFFERED
               value: "1"
 
-          # Mount OIDC configuration as volume (shared with main container)
-          volumeMounts:
-            - name: oidc-config
-              mountPath: /etc/mcp/oidc
-              readOnly: true
-            {{- if ne .Values.oidc.authType "keycloak" }}
-            - name: oidc-credentials
-              mountPath: /etc/mcp/secrets/oidc
-              readOnly: true
-            {{- end }}
+          # No OIDC config or credentials — the test sidecar runs in --no-auth.
 
           livenessProbe:
             httpGet:
