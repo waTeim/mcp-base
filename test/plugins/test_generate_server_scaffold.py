@@ -5,8 +5,13 @@ Validates the resource-first manifest contract: the tool returns compact
 coordination metadata (project_id, artifacts, retrieval_contract, workflow);
 bulk file bytes are NOT in the tool output and must be fetched via
 resources/read against the scaffold:// URIs.
+
+Also publishes project_id and the artifact list into ctx.shared so
+downstream plugins (list_artifacts, read_scaffold_artifact, ...) can reuse
+this scaffold instead of generating their own.
 """
-from plugins import TestPlugin, TestResult
+from plugins import TestPlugin, TestResult, TestContext
+from typing import Optional
 import time
 import json
 
@@ -19,7 +24,7 @@ class TestGenerateServerScaffold(TestPlugin):
     depends_on = []
     run_after = ["TestRenderTemplate"]
 
-    async def test(self, session) -> TestResult:
+    async def test(self, session, ctx: Optional[TestContext] = None) -> TestResult:
         start_time = time.time()
 
         try:
@@ -155,6 +160,13 @@ class TestGenerateServerScaffold(TestPlugin):
                     message="workflow should be a non-empty list",
                     duration_ms=(time.time() - start_time) * 1000
                 )
+
+            # Publish project_id + artifact paths so downstream plugins
+            # (list_artifacts, read_scaffold_artifact, ...) can reuse this
+            # scaffold instead of generating their own.
+            if ctx is not None:
+                ctx.shared["scaffold_project_id"] = data["project_id"]
+                ctx.shared["scaffold_artifacts"] = artifacts
 
             return TestResult(
                 plugin_name=self.get_name(),

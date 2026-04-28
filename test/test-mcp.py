@@ -270,9 +270,16 @@ def discover_plugins(plugins_dir: Path) -> List:
     return plugins
 
 
-async def run_plugin_tests(session, plugins: List) -> tuple[int, List]:
+async def run_plugin_tests(session, plugins: List, ctx=None) -> tuple[int, List]:
     """
     Run all plugin tests and report results.
+
+    Args:
+        session: Live MCP ClientSession.
+        plugins: Discovered + topologically sorted plugin instances.
+        ctx: Optional TestContext passed to plugins whose `test()` signature
+            declares a `ctx` parameter. Older single-arg plugins are called
+            without it.
 
     Returns:
         Tuple of (exit_code, results_list)
@@ -309,7 +316,11 @@ async def run_plugin_tests(session, plugins: List) -> tuple[int, List]:
         print(f"  {plugin_name}...", end=" ", flush=True)
 
         try:
-            result = await plugin.test(session)
+            sig = inspect.signature(plugin.test)
+            if ctx is not None and "ctx" in sig.parameters:
+                result = await plugin.test(session, ctx=ctx)
+            else:
+                result = await plugin.test(session)
             results.append(result)
 
             if result.passed:
@@ -512,7 +523,9 @@ async def run_automated_tests(url: str, auth_token: str = None, output_file: str
                 print(f"   Version: {init_result.serverInfo.version}")
                 print()
 
-                exit_code, results = await run_plugin_tests(session, plugins)
+                from plugins import TestContext
+                ctx = TestContext(base_url=mcp_url)
+                exit_code, results = await run_plugin_tests(session, plugins, ctx=ctx)
 
                 if output_file:
                     save_test_results(results, output_file, output_format, url)
