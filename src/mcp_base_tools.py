@@ -2432,11 +2432,14 @@ def register_tools(mcp):
                   Must match a path from the scaffold's `files` list exactly.
 
         Returns:
-            Exact file content as stored at scaffold generation time.
-
-        Raises:
-            ValueError: If the project or file is not found. Treat this as a
-            retrieval failure — do NOT fall back to template rendering.
+            On success: exact file content as stored at scaffold generation
+            time.
+            On not-found (project or path): a string starting with
+            "Error: ..." describing the failure and listing available
+            projects/files. Returning rather than raising avoids FastMCP
+            logging a full traceback for an expected condition; treat the
+            "Error: " prefix as a retrieval failure — do NOT fall back to
+            template rendering.
         """
         artifact = artifact_store.get(project_id, path)
         if artifact is None:
@@ -2448,12 +2451,13 @@ def register_tools(mcp):
                     if all_projects else
                     "\n\nNo scaffold projects are currently stored. Call generate_server_scaffold first."
                 )
-                raise ValueError(
-                    f"Project '{project_id}' not found. It may have expired.{hint}"
+                return (
+                    f"Error: Project '{project_id}' not found. "
+                    f"It may have expired.{hint}"
                 )
             available_paths = [p for p, _ in available]
-            raise ValueError(
-                f"File '{path}' not found in project '{project_id}'.\n"
+            return (
+                f"Error: File '{path}' not found in project '{project_id}'.\n"
                 f"Available files ({len(available_paths)}):\n"
                 + "\n".join(f"  - {p}" for p in available_paths[:20])
                 + ("\n  ..." if len(available_paths) > 20 else "")
