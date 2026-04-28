@@ -382,9 +382,48 @@ _ROLE_RULES = [
     (re.compile(r"^test/plugins/test_example\.py$"), {
         "role": "test_plugin_example",
         "customization_relevance": "high",
-        "summary": "Starter test plugin — copy to build plugin tests for your tools.",
+        "summary": "Starter test plugin — heavily commented; copy to test/plugins/test_<your_tool>.py for every new @mcp.tool you add.",
         "customization_notes": [
-            "Rename the class, set tool_name, and fill in the test() body.",
+            "REQUIRED for every new tool: copy this file to "
+            "test/plugins/test_<your_tool>.py, rename the class to "
+            "Test<YourToolPascalCase>, set tool_name to match the @mcp.tool "
+            "name, and replace the body with happy-path AND error-path "
+            "assertions specific to your tool's contract.",
+            "Use ctx.shared to publish IDs (project_id, cluster name, "
+            "resource UID) for downstream plugins to reuse.",
+        ],
+        "verification_notes": [
+            "make dev-test          # runs against the in-cluster sidecar via port-forward",
+            "make dev-coverage      # runs locally under coverage.py and reports line/branch coverage",
+        ],
+    }),
+    (re.compile(r"^test/plugins/test_health_endpoints\.py$"), {
+        "role": "test_plugin",
+        "customization_relevance": "low",
+        "summary": "Standard plugin: verifies /healthz and /readyz return 200 with the documented JSON shape (the K8s probe surface).",
+        "customization_notes": [],
+        "verification_notes": [],
+    }),
+    (re.compile(r"^test/run-coverage\.py$"), {
+        "role": "test_coverage_runner",
+        "customization_relevance": "low",
+        "summary": "Coverage orchestrator: spawns the test server under `coverage run`, runs the test suite, combines parallel-mode data, prints a report.",
+        "customization_notes": [],
+        "verification_notes": ["make dev-coverage", "make dev-coverage-html"],
+    }),
+    (re.compile(r"^test/requirements\.txt$"), {
+        "role": "test_requirements",
+        "customization_relevance": "low",
+        "summary": "Test-only dependencies (coverage, httpx). NOT installed into the production container; install with `pip install -r test/requirements.txt`.",
+        "customization_notes": [],
+        "verification_notes": ["make dev-deps"],
+    }),
+    (re.compile(r"^\.coveragerc$"), {
+        "role": "coverage_config",
+        "customization_relevance": "low",
+        "summary": "coverage.py config: source=src, branch coverage on, parallel mode (test server subprocess writes its own data file).",
+        "customization_notes": [
+            "Add modules to `omit =` if you want to exclude them from the report.",
         ],
         "verification_notes": [],
     }),
@@ -1696,15 +1735,22 @@ async def generate_server_scaffold_impl(
     if include_test:
         test_templates = [
             ("test/test_runner.py.j2", "test/test-mcp.py"),
+            # Coverage harness — runs the no-auth test server under
+            # `coverage run` and combines parallel-mode data files.
+            ("test/run-coverage.py.j2", "test/run-coverage.py"),
+            (".coveragerc.j2", ".coveragerc"),
         ]
 
         test_static = [
             ("test/plugin_base.py", "test/plugins/__init__.py"),
+            ("test/requirements.txt", "test/requirements.txt"),
             ("test/get_user_token.py", "test/get-user-token.py"),
             ("test/auth_proxy.py", "test/mcp-auth-proxy.py"),
             ("test/test_list_resources.py", "test/plugins/test_list_resources.py"),
             ("test/test_read_resource.py", "test/plugins/test_read_resource.py"),
             ("test/test_list_prompts.py", "test/plugins/test_list_prompts.py"),
+            # Always-available smoke test against the K8s probe surface.
+            ("test/test_health_endpoints.py", "test/plugins/test_health_endpoints.py"),
         ]
 
         for template_path, output_path in test_templates:
@@ -1719,49 +1765,20 @@ async def generate_server_scaffold_impl(
             if static_path.exists():
                 files[output_path] = static_path.read_text()
 
-        # Example test plugin
-        files["test/plugins/test_example.py"] = f'''"""
-Example test plugin for {server_name}.
-
-Copy this file and modify for your own tools.
-"""
-from plugins import TestPlugin, TestResult
-import time
-
-
-class TestExampleTool(TestPlugin):
-    """Example test for a tool."""
-
-    tool_name = "example_tool"
-    description = "Tests the example tool"
-    depends_on = []
-    run_after = []
-
-    async def test(self, session) -> TestResult:
-        start_time = time.time()
-
+        # Example test plugin (richly-commented starter — agents copy this
+        # to test/plugins/test_<your_tool>.py when adding a new @mcp.tool
+        # to src/<server>_tools.py). Generated from
+        # templates/test/test_example_custom_tool.py.j2 so the example
+        # stays in sync with the rest of the test harness.
         try:
-            # Call your tool here
-            # result = await session.call_tool("your_tool", arguments={{}})
-
-            return TestResult(
-                plugin_name=self.get_name(),
-                tool_name=self.tool_name,
-                passed=True,
-                message="Example test passed (implement your test here)",
-                duration_ms=(time.time() - start_time) * 1000
+            example_plugin_template = jinja_env.get_template(
+                "test/test_example_custom_tool.py.j2"
             )
-
+            files["test/plugins/test_example.py"] = example_plugin_template.render(
+                **variables
+            )
         except Exception as e:
-            return TestResult(
-                plugin_name=self.get_name(),
-                tool_name=self.tool_name,
-                passed=False,
-                message="Test failed",
-                error=str(e),
-                duration_ms=(time.time() - start_time) * 1000
-            )
-'''
+            files["test/plugins/test_example.py"] = f"# Error rendering: {e}"
 
     # NOTE: Utility scripts (add-user, setup-oidc, setup-rbac, etc.) are NOT included in the
     # scaffold. They are available via the mcp-base CLI (pip install mcp-base) to avoid context

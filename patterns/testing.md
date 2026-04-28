@@ -1,560 +1,325 @@
 # Testing Pattern
 
-This document describes the testing pattern for MCP servers.
+How to test the MCP server you just generated, and — critically — how to
+**add tests for every tool you implement** in
+`src/<server>_tools.py`. The harness is designed to make that step
+mechanical.
 
-## Overview
+---
 
-MCP server testing uses a plugin-based architecture:
+## TL;DR for agents customizing a generated server
 
-1. **Test Runner** - Discovers and executes test plugins
-2. **Test Plugins** - Individual tool tests
-3. **MCP Inspector** - Interactive manual testing
-4. **Auth Proxy** - Simplifies authenticated testing
+For each new `@mcp.tool` you add to `src/<server>_tools.py`, you MUST
+add a corresponding plugin under `test/plugins/test_<your_tool>.py`.
 
-## Test Plugin Architecture
+1. Copy `test/plugins/test_example.py` to `test/plugins/test_<your_tool>.py`.
+2. Rename the class to `Test<YourToolPascalCase>`.
+3. Set `tool_name` to the exact string you passed to `@mcp.tool(name="...")`.
+4. Replace the body with **happy-path** + at least one **error-path**
+   assertion against the contract you documented in your tool's
+   docstring.
+5. Run `make dev-coverage` locally to confirm the new lines are
+   exercised.
 
-### Base Plugin Class
+The starter file `test/plugins/test_example.py` has a dense
+header comment walking through each step — open it before adapting.
 
-```python
-from dataclasses import dataclass
-from typing import Optional, List
-from abc import ABC, abstractmethod
-import time
+---
 
-@dataclass
-class TestResult:
-    """Result of a test execution."""
-    plugin_name: str
-    tool_name: str
-    passed: bool
-    message: str
-    error: Optional[str] = None
-    duration_ms: Optional[float] = None
+## Architecture
 
-class TestPlugin(ABC):
-    """Base class for test plugins."""
-
-    # Override these in subclasses
-    tool_name: str = "unknown"
-    description: str = "Test plugin"
-
-    # Dependencies - tests that must pass before this one
-    depends_on: List[str] = []
-
-    # Soft dependencies - run after these if present
-    run_after: List[str] = []
-
-    def get_name(self) -> str:
-        """Get the plugin name (class name by default)."""
-        return self.__class__.__name__
-
-    @abstractmethod
-    async def test(self, session) -> TestResult:
-        """
-        Execute the test.
-
-        Args:
-            session: MCP ClientSession connected to server
-
-        Returns:
-            TestResult with pass/fail status
-        """
-        pass
+```
+test/
+├── Dockerfile                   # test sidecar image (FROM main image, --no-auth)
+├── test-mcp.py                  # plugin runner; --no-auth and --port-forward modes
+├── run-coverage.py              # spawns server under coverage, runs runner, reports
+├── requirements.txt             # test-only deps (coverage, httpx)
+└── plugins/
+    ├── __init__.py              # TestPlugin / TestResult / TestContext
+    ├── test_list_resources.py   # standard: resources/list
+    ├── test_read_resource.py    # standard: resources/read
+    ├── test_list_prompts.py     # standard: prompts/list
+    ├── test_health_endpoints.py # standard: GET /healthz, /readyz
+    ├── test_example.py          # ← STARTER — copy per new tool
+    └── test_<your_tool>.py      # ← write one per @mcp.tool you add
 ```
 
-### Example Test Plugin
-
-```python
-# test/plugins/test_list_resources.py
-from plugins import TestPlugin, TestResult
-import time
-
-class TestListResources(TestPlugin):
-    """Test the list_resources tool."""
-
-    tool_name = "list_resources"
-    description = "Lists all resources in namespace"
-    depends_on = []  # No dependencies
-    run_after = []
-
-    async def test(self, session) -> TestResult:
-        start_time = time.time()
-
-        try:
-            # Call the tool
-            result = await session.call_tool(
-                "list_resources",
-                arguments={"namespace": "default"}
-            )
-
-            duration = (time.time() - start_time) * 1000
-
-            # Check result
-            if result and hasattr(result, 'content'):
-                content = result.content[0].text if result.content else ""
-
-                if "Error" in content:
-                    return TestResult(
-                        plugin_name=self.get_name(),
-                        tool_name=self.tool_name,
-                        passed=False,
-                        message="Tool returned an error",
-                        error=content,
-                        duration_ms=duration
-                    )
-
-                return TestResult(
-                    plugin_name=self.get_name(),
-                    tool_name=self.tool_name,
-                    passed=True,
-                    message=f"Successfully listed resources",
-                    duration_ms=duration
-                )
-
-            return TestResult(
-                plugin_name=self.get_name(),
-                tool_name=self.tool_name,
-                passed=False,
-                message="No content in response",
-                duration_ms=duration
-            )
-
-        except Exception as e:
-            return TestResult(
-                plugin_name=self.get_name(),
-                tool_name=self.tool_name,
-                passed=False,
-                message="Exception during test",
-                error=str(e),
-                duration_ms=(time.time() - start_time) * 1000
-            )
-```
-
-### Test with Dependencies
-
-```python
-class TestCreateResource(TestPlugin):
-    """Test creating a resource."""
-
-    tool_name = "create_resource"
-    description = "Creates a new resource"
-    depends_on = ["TestListResources"]  # Must pass first
-    run_after = []
-
-    async def test(self, session) -> TestResult:
-        # Implementation...
-        pass
-
-class TestDeleteResource(TestPlugin):
-    """Test deleting a resource."""
-
-    tool_name = "delete_resource"
-    description = "Deletes a resource"
-    depends_on = ["TestCreateResource"]  # Needs created resource
-    run_after = []
-
-    async def test(self, session) -> TestResult:
-        # Implementation...
-        pass
-```
-
-## Test Runner Pattern
-
-### Plugin Discovery
-
-```python
-import importlib
-import inspect
-from pathlib import Path
-
-def discover_plugins(plugins_dir: Path) -> List[TestPlugin]:
-    """Discover all test plugins in directory."""
-    plugins = []
-
-    # Add to Python path
-    sys.path.insert(0, str(plugins_dir.parent))
-
-    for plugin_file in plugins_dir.glob("test_*.py"):
-        module_name = f"plugins.{plugin_file.stem}"
-        module = importlib.import_module(module_name)
-
-        for name, obj in inspect.getmembers(module, inspect.isclass):
-            if (hasattr(obj, 'test') and
-                callable(obj.test) and
-                obj.__module__ == module_name):
-                plugins.append(obj())
-
-    return plugins
-```
-
-### Topological Sort for Dependencies
-
-```python
-def topological_sort_plugins(plugins: List[TestPlugin]) -> List[TestPlugin]:
-    """Sort plugins by dependencies."""
-    plugin_map = {p.get_name(): p for p in plugins}
-    visited = set()
-    result = []
-
-    def visit(plugin):
-        if plugin.get_name() in visited:
-            return
-        visited.add(plugin.get_name())
-
-        # Visit dependencies first
-        for dep in plugin.depends_on + plugin.run_after:
-            if dep in plugin_map:
-                visit(plugin_map[dep])
-
-        result.append(plugin)
-
-    for plugin in plugins:
-        visit(plugin)
-
-    return result
-```
-
-### Test Execution
-
-```python
-async def run_plugin_tests(session, plugins: List[TestPlugin]) -> tuple[int, List[TestResult]]:
-    """Run all plugin tests."""
-    results = []
-    failed_tests = set()
-
-    for plugin in plugins:
-        # Skip if dependencies failed
-        deps_failed = [d for d in plugin.depends_on if d in failed_tests]
-        if deps_failed:
-            results.append(TestResult(
-                plugin_name=plugin.get_name(),
-                tool_name=plugin.tool_name,
-                passed=False,
-                message=f"Skipped: dependency failed: {deps_failed}"
-            ))
-            failed_tests.add(plugin.get_name())
-            continue
-
-        # Run test
-        result = await plugin.test(session)
-        results.append(result)
-
-        if not result.passed:
-            failed_tests.add(plugin.get_name())
-
-    exit_code = 1 if failed_tests else 0
-    return exit_code, results
-```
-
-## MCP Client Connection
-
-### HTTP Transport
-
-```python
-from mcp.client.streamable_http import streamablehttp_client
-from mcp.client.session import ClientSession
-
-async def connect_http(url: str, token: str = None):
-    """Connect to MCP server via HTTP."""
-    headers = {}
-    if token:
-        headers["Authorization"] = f"Bearer {token}"
-
-    mcp_url = f"{url}/mcp"
-
-    async with streamablehttp_client(mcp_url, headers=headers) as (read, write, get_session_id):
-        async with ClientSession(read, write) as session:
-            init_result = await session.initialize()
-            print(f"Connected: {init_result.serverInfo.name}")
-
-            # Run tests
-            exit_code, results = await run_plugin_tests(session, plugins)
-            return exit_code, results
-```
-
-## Auth Proxy for Testing
-
-Simplify authenticated testing with a local proxy:
-
-```python
-# test/mcp-auth-proxy.py
-from http.server import HTTPServer, BaseHTTPRequestHandler
-import requests
-
-class AuthProxyHandler(BaseHTTPRequestHandler):
-    """Proxy that injects Authorization header."""
-
-    def do_POST(self):
-        # Read token from file
-        token = Path("/tmp/mcp-user-token.txt").read_text().strip()
-
-        # Forward request with auth header
-        headers = dict(self.headers)
-        headers["Authorization"] = f"Bearer {token}"
-
-        response = requests.post(
-            f"{BACKEND_URL}{self.path}",
-            headers=headers,
-            data=self.rfile.read(int(self.headers['Content-Length']))
-        )
-
-        # Return response
-        self.send_response(response.status_code)
-        for k, v in response.headers.items():
-            self.send_header(k, v)
-        self.end_headers()
-        self.wfile.write(response.content)
-```
-
-## Test Output Formats
-
-### JSON Output
-
-```python
-def save_json_results(results: List[TestResult], output_file: str):
-    """Save results as JSON."""
-    output = {
-        "timestamp": datetime.now(timezone.utc).isoformat(),
-        "summary": {
-            "total": len(results),
-            "passed": sum(1 for r in results if r.passed),
-            "failed": sum(1 for r in results if not r.passed)
-        },
-        "tests": [
-            {
-                "plugin_name": r.plugin_name,
-                "tool_name": r.tool_name,
-                "passed": r.passed,
-                "message": r.message,
-                "error": r.error,
-                "duration_ms": r.duration_ms
-            }
-            for r in results
-        ]
-    }
-
-    with open(output_file, 'w') as f:
-        json.dump(output, f, indent=2)
-```
-
-### JUnit XML Output
-
-```python
-import xml.etree.ElementTree as ET
-
-def save_junit_results(results: List[TestResult], output_file: str):
-    """Save results as JUnit XML for CI/CD."""
-    testsuite = ET.Element("testsuite", {
-        "name": "MCP Automated Tests",
-        "tests": str(len(results)),
-        "failures": str(sum(1 for r in results if not r.passed))
-    })
-
-    for r in results:
-        testcase = ET.SubElement(testsuite, "testcase", {
-            "name": r.plugin_name,
-            "classname": f"mcp.tools.{r.tool_name}",
-            "time": f"{(r.duration_ms or 0) / 1000:.3f}"
-        })
-
-        if not r.passed:
-            failure = ET.SubElement(testcase, "failure", {"message": r.message})
-            if r.error:
-                failure.text = r.error
-
-    tree = ET.ElementTree(testsuite)
-    tree.write(output_file, encoding="utf-8", xml_declaration=True)
-```
-
-## Test Runner CLI
+Two ways to run:
 
 ```bash
-# Run automated tests
-./test-mcp.py --url https://mcp.example.com
+# Local, against a no-auth test server you spawn:
+make dev-run-test          # in one terminal
+make test                  # in another
 
-# Save results
-./test-mcp.py --url https://mcp.example.com --output results.json
-./test-mcp.py --url https://mcp.example.com --output results.xml --format junit
+# In-cluster (auto kubectl port-forward to the test sidecar):
+make test-cluster
 
-# Use MCP Inspector for manual testing
-./test-mcp.py --use-inspector --url https://mcp.example.com --use-proxy
-
-# With kubectl port-forward
-./test-mcp.py --use-inspector --port-forward --namespace mcp
+# Local, under coverage:
+make dev-deps              # one-time: pip install -r test/requirements.txt
+make dev-coverage          # spawns test server under coverage, runs tests, reports
+make dev-coverage-html     # also writes coverage-html/index.html
 ```
 
-## Testing MCP Protocol Endpoints
+---
 
-### List Resources Test
-
-When testing `session.list_resources()`, be aware of type conversions:
+## Plugin contract
 
 ```python
-class TestListResources(TestPlugin):
-    """Tests the resources/list endpoint."""
+from plugins import TestPlugin, TestResult, TestContext
+from typing import Optional
+import time
 
-    tool_name = "list_resources"
-    description = "Verifies server exposes expected resources"
+class TestMyTool(TestPlugin):
+    tool_name = "my_tool"                          # MUST match @mcp.tool(name=...)
+    description = "Verifies my_tool round-trips X"
+    depends_on  = []                               # hard: failure cascades
+    run_after   = []                               # soft: ordering only
 
-    async def test(self, session) -> TestResult:
-        start_time = time.time()
-
-        try:
-            result = await session.list_resources()
-
-            # IMPORTANT: Convert AnyUrl objects to strings for comparison
-            # result.resources contains Resource objects with uri as AnyUrl
-            resource_uris = [str(r.uri) for r in result.resources] if hasattr(result, 'resources') else []
-
-            # Expected resource URIs (as strings)
-            expected_resources = [
-                "template://server/entry_point.py",
-                "pattern://fastmcp-tools",
-                # ... more resources
-            ]
-
-            # Check for missing resources
-            missing = [r for r in expected_resources if r not in resource_uris]
-
-            if missing:
-                return TestResult(
-                    plugin_name=self.get_name(),
-                    tool_name=self.tool_name,
-                    passed=False,
-                    message=f"Missing {len(missing)} resource(s): {missing[:3]}...",
-                    duration_ms=(time.time() - start_time) * 1000
-                )
-
-            return TestResult(
-                plugin_name=self.get_name(),
-                tool_name=self.tool_name,
-                passed=True,
-                message=f"Found all {len(expected_resources)} expected resources",
-                duration_ms=(time.time() - start_time) * 1000
-            )
-
-        except Exception as e:
-            return TestResult(
-                plugin_name=self.get_name(),
-                tool_name=self.tool_name,
-                passed=False,
-                message="Failed to list resources",
-                error=str(e),
-                duration_ms=(time.time() - start_time) * 1000
-            )
+    async def test(self, session, ctx: Optional[TestContext] = None) -> TestResult:
+        start = time.time()
+        result = await session.call_tool("my_tool", arguments={"x": 1})
+        text = result.content[0].text if (
+            hasattr(result, "content") and result.content
+        ) else str(result)
+        # ... assertions ...
+        return TestResult(
+            plugin_name=self.get_name(),
+            tool_name=self.tool_name,
+            passed=True,
+            message="...",
+            duration_ms=(time.time() - start) * 1000,
+        )
 ```
 
-**Critical Detail**: The `result.resources` list contains `Resource` objects where `uri` is an `AnyUrl` type from Pydantic. You must convert to string using `str(r.uri)` before comparing with string URIs, otherwise comparisons will always fail.
+### Two valid signatures
 
-### Read Resource Test
+The runner inspects each plugin's `test()` signature and only passes
+`ctx` if the parameter is declared:
 
-When testing `session.read_resource()`, verify content structure:
+| Signature | When to use |
+|-----------|-------------|
+| `async def test(self, session)` | Pure MCP-protocol tests with no need for cross-plugin state or non-MCP HTTP. |
+| `async def test(self, session, ctx: Optional[TestContext] = None)` | Need `ctx.base_url` (for `/healthz`-style plain-HTTP tests) or `ctx.shared` (for cross-plugin coordination). |
+
+### `TestContext`
 
 ```python
-class TestReadResource(TestPlugin):
-    """Tests reading a resource."""
-
-    tool_name = "read_resource"
-    description = "Verifies reading resources"
-    depends_on = ["TestListResources"]
-
-    async def test(self, session) -> TestResult:
-        start_time = time.time()
-
-        try:
-            result = await session.read_resource(uri="template://server/entry_point.py")
-
-            # Extract text content from ReadResourceResult
-            if hasattr(result, 'contents') and result.contents:
-                text_content = result.contents[0].text if result.contents else ""
-            else:
-                text_content = str(result)
-
-            # Verify expected content markers
-            expected_markers = [
-                "#!/usr/bin/env python3",
-                "FastMCP",
-                "def main():",
-            ]
-
-            missing = [m for m in expected_markers if m not in text_content]
-
-            if missing:
-                return TestResult(
-                    plugin_name=self.get_name(),
-                    tool_name=self.tool_name,
-                    passed=False,
-                    message=f"Resource missing expected content: {missing}",
-                    duration_ms=(time.time() - start_time) * 1000
-                )
-
-            return TestResult(
-                plugin_name=self.get_name(),
-                tool_name=self.tool_name,
-                passed=True,
-                message=f"Successfully read resource ({len(text_content)} bytes)",
-                duration_ms=(time.time() - start_time) * 1000
-            )
-
-        except Exception as e:
-            return TestResult(
-                plugin_name=self.get_name(),
-                tool_name=self.tool_name,
-                passed=False,
-                message="Failed to read resource",
-                error=str(e),
-                duration_ms=(time.time() - start_time) * 1000
-            )
+@dataclass
+class TestContext:
+    base_url: str                   # e.g. "http://127.0.0.1:8001/test"
+    shared:   Dict[str, Any] = field(default_factory=dict)
 ```
 
-### List Prompts Test
+- `base_url` — the MCP endpoint the runner connected to. For non-MCP HTTP
+  endpoints (`/healthz`, `/readyz`, `/metrics`, …) strip the path and
+  rebuild: see `_strip_path` in `test/plugins/test_health_endpoints.py`.
+- `shared` — a per-run scratch dict. Earlier plugins publish, later
+  plugins read. Use `depends_on` / `run_after` to enforce ordering.
+
+### Ordering: `depends_on` vs `run_after`
 
 ```python
-class TestListPrompts(TestPlugin):
-    """Tests the prompts/list endpoint."""
-
-    tool_name = "list_prompts"
-    description = "Verifies prompts/list works"
-
-    async def test(self, session) -> TestResult:
-        start_time = time.time()
-
-        try:
-            result = await session.list_prompts()
-
-            # Get list of prompts
-            prompts = result.prompts if hasattr(result, 'prompts') else []
-
-            # Validate expected prompts if your server defines any
-            # If no prompts defined, just verify the endpoint works
-            return TestResult(
-                plugin_name=self.get_name(),
-                tool_name=self.tool_name,
-                passed=True,
-                message=f"Prompts list returned successfully ({len(prompts)} prompts)",
-                duration_ms=(time.time() - start_time) * 1000
-            )
-
-        except Exception as e:
-            return TestResult(
-                plugin_name=self.get_name(),
-                tool_name=self.tool_name,
-                passed=False,
-                message="Failed to list prompts",
-                error=str(e),
-                duration_ms=(time.time() - start_time) * 1000
-            )
+depends_on = ["TestCreateResource"]   # hard — skipped if TestCreateResource fails
+run_after  = ["TestListResources"]    # soft — runs even if TestListResources fails
 ```
 
-## Best Practices
+Both reference plugin **class names**. The runner topologically sorts
+across both edges.
 
-1. **One plugin per tool** - Keep tests focused
-2. **Use dependencies** - Order tests logically
-3. **Clean up after tests** - Delete created resources
-4. **Include timing** - Track performance
-5. **Support multiple outputs** - JSON for scripts, JUnit for CI
-6. **Use auth proxy** - Simplifies authenticated testing
-7. **Test error cases** - Verify error handling works
-8. **Convert Pydantic types** - Use `str()` for AnyUrl when comparing URIs
-9. **Match actual content** - Test expectations must match actual file content exactly
-10. **Test MCP protocol endpoints** - Always test list_resources, read_resource, and list_prompts
+### Cross-plugin state via `ctx.shared`
+
+```python
+# In a "create" plugin:
+ctx.shared.setdefault("created_clusters", []).append(cluster_name)
+
+# In a "delete" plugin (depends_on=["TestCreateCluster"]):
+for name in ctx.shared.get("created_clusters", []):
+    await session.call_tool("delete_cluster", arguments={"name": name})
+```
+
+This is the supported way to thread fixture state. Don't use module
+globals — they leak between test runs.
+
+---
+
+## What every new tool's test must cover
+
+For each `@mcp.tool` in `src/<server>_tools.py`, your plugin MUST
+verify both:
+
+1. **Happy path** — valid inputs, assert response **shape** (specific
+   keys for JSON tools; distinctive substrings for prose tools). "No
+   exception" is not enough — a tool returning the wrong content with a
+   200 still breaks consumers.
+2. **At least one error path** — invalid inputs (bad namespace, missing
+   resource, empty argument) should produce a recognizable error
+   *response*, not an unhandled exception. Both shapes count:
+   - The tool returns an `"Error: ..."` string (preferred — no
+     server-side traceback).
+   - The MCP response carries `isError=True` with the message in the
+     content.
+
+For tools with side effects (create/update/delete K8s resources), also
+write a follow-up plugin that **observes** the side effect — list, get,
+or describe. Pair them via `depends_on` so the observer is skipped if
+the create failed.
+
+For tools that return large output, assert size is bounded. Runaway
+output crowds out other tool results in model context.
+
+### Detecting operational errors
+
+Many tools return success at the MCP protocol layer but the underlying
+operation failed (e.g. RBAC 403). Use the helper from `plugins`:
+
+```python
+from plugins import check_for_operational_error
+is_err, msg = check_for_operational_error(text)
+if is_err:
+    return TestResult(... passed=False, error=msg ...)
+```
+
+It catches Kubernetes-style errors (`is forbidden:`, `Permission denied`,
+`Connection refused`, etc.).
+
+---
+
+## Critical gotchas
+
+### `result.uri` is `AnyUrl`, not `str`
+
+```python
+result = await session.list_resources()
+uris = [str(r.uri) for r in result.resources]   # ← str() is required
+```
+
+Without `str()`, comparisons against string URIs silently fail.
+
+### `result.contents` vs `result.content`
+
+- `read_resource()` returns `ReadResourceResult` with `.contents` (plural).
+- `call_tool()` returns `CallToolResult` with `.content` (singular).
+
+Defensive pattern:
+
+```python
+text = result.content[0].text if (
+    hasattr(result, "content") and result.content
+) else str(result)
+```
+
+### Tool error reporting
+
+Tools should `return "Error: ..."` strings rather than `raise ValueError`.
+Raising triggers FastMCP's traceback-formatting logger, which dumps a
+Rich panel to stderr — noisy and easy to confuse with real bugs. Both
+shapes are valid; the example plugin handles both.
+
+---
+
+## Coverage workflow
+
+```
+make dev-deps           # pip install -r test/requirements.txt (one-time)
+make dev-coverage       # full cycle: spawn test server under coverage,
+                        # run plugin suite, SIGTERM, combine, report
+make dev-coverage-html  # same + HTML report at coverage-html/index.html
+```
+
+`test/run-coverage.py` orchestrates:
+
+1. Picks a free local port.
+2. Spawns the test server via `python -m coverage run`.
+3. Waits for the port to bind.
+4. Runs `test/test-mcp.py --no-auth --url http://127.0.0.1:<port>/test`.
+5. Sends `SIGTERM` — caught by `_install_clean_shutdown_handlers()` in
+   the test server, which calls `sys.exit(0)` so atexit fires and
+   coverage flushes its data file.
+6. `coverage combine` merges the parallel-mode files.
+7. `coverage report` (and optionally `coverage html`).
+
+The `_install_clean_shutdown_handlers` step is load-bearing — uvicorn
+restores signal handlers on shutdown and re-raises the captured signal,
+so the handler we install BEFORE `uvicorn.run()` is what eventually
+executes. Without it the process exits with 128+sig and atexit is
+skipped → no coverage data.
+
+### Reading the report
+
+```
+Name                         Stmts   Miss Branch BrPart  Cover   Missing
+------------------------------------------------------------------------
+src/<server>_tools.py          734     80    298     43  86.1%   ...
+src/<server>_test_server.py    144     20     28      4  83.7%   ...
+```
+
+The `Missing` column lists line numbers (and `start->end` branch arcs)
+for code your tests didn't reach. **Before merging a new tool: confirm
+the lines you added show up as covered.** If your new tool's body is
+in `Missing`, your test is calling something else.
+
+### Setting an expectation
+
+A good rule of thumb after the first iteration of a tool:
+
+- The happy-path lines of the tool body: **100% covered**.
+- The error branches inside the tool: **at least one per branch covered**.
+- Helper functions: covered transitively if they're on the hot path.
+
+Anything below 80% on a hand-written tool means a missing test.
+
+---
+
+## Health endpoints
+
+`/healthz` (`{"status": "alive"}`) and `/readyz` (`{"status": "ready"}`)
+are the chart's K8s probe surface. The standard
+`test_health_endpoints.py` plugin hits them via httpx (deriving the URL
+from `ctx.base_url`) and asserts both status code and JSON body. Don't
+delete it — silent regressions here mean broken pod health checks in
+production.
+
+---
+
+## In-cluster testing
+
+The Helm chart enables a sidecar container that runs the test server in
+`--no-auth` mode behind ClusterIP only (never via Ingress). To test
+against it:
+
+```bash
+make test-cluster
+# Equivalent to:
+# python test/test-mcp.py --no-auth --port-forward <release>
+```
+
+`--port-forward [namespace/]service[:port]` spawns and tears down
+`kubectl port-forward` automatically. Namespace defaults to the current
+kubectl context's namespace; port defaults to the test sidecar port.
+
+The mock identity (`sub`, `iss`) is injected by `NoAuthMiddleware` so
+tools that rely on `MCPContext.user_id` keep working.
+
+---
+
+## Output formats
+
+```bash
+./test/test-mcp.py --output results.json                 # JSON
+./test/test-mcp.py --output results.xml --format junit   # JUnit XML for CI
+```
+
+JUnit format integrates with GitHub Actions, GitLab CI, Jenkins.
+
+---
+
+## Best practices recap
+
+1. **One plugin per tool.** Don't pack multiple unrelated tools into one plugin.
+2. **Always write a negative test.** Happy-path-only tests miss bad-input regressions.
+3. **Clean up after side-effecting tests.** A `Test<X>Delete` plugin with `depends_on=["Test<X>Create"]`.
+4. **Use `ctx.shared` for fixture state.** Never module globals.
+5. **Convert Pydantic types.** `str(r.uri)` for AnyUrl comparisons.
+6. **Match real content.** Substring checks must match what the file/tool actually returns.
+7. **Run `make dev-coverage` before declaring a tool done.** New code should show up in the report as covered.
+8. **Test the K8s probe endpoints.** `test_health_endpoints.py` ships pre-wired; don't remove it.

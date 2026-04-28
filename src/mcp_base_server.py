@@ -114,13 +114,47 @@ INTENDED AGENT WORKFLOW
    If any fail → STOP, write SCAFFOLD_RETRIEVAL_FAILURE.md, do not customize.
 4. Inspect only files with customization_relevance in {"high","medium"};
    use read_scaffold_artifact_metadata for symbols/notes first.
-5. Customize locally; chmod +x bin/*; python bin/configure-make.py;
+5. Customize src/<server>_tools.py — add @mcp.tool / @mcp.resource /
+   @mcp.prompt implementations.
+6. **Write tests for every tool you add.** This is not optional. The
+   scaffold ships test/plugins/test_example.py as a richly-commented
+   starter; copy it to test/plugins/test_<your_tool>.py per new tool,
+   and assert BOTH a happy path AND at least one error path. See
+   pattern://testing for the contract and worked examples. Run
+   `make dev-coverage` and confirm the lines you added show up as
+   covered before declaring the tool done.
+7. chmod +x bin/*; python bin/configure-make.py;
    make build && make push && make helm-install.
+8. `make test-cluster` to exercise the deployed test sidecar
+   (auto-managed kubectl port-forward, no auth setup required).
 
 For tool-only proxy clients (resources not forwarded by the proxy):
 - Still call list_scaffold_artifact_metadata for coordination.
 - Fall back to read_scaffold_artifact for byte transfer (accepts the
   context-bloat cost). The hash-verification gate is unchanged.
+
+========================================================================
+TESTING (REQUIRED, NOT OPTIONAL)
+========================================================================
+
+Every @mcp.tool you add must have a corresponding plugin under
+test/plugins/test_<your_tool>.py. The harness is designed to make
+this mechanical:
+
+  - test/plugins/test_example.py is the starter — copy it per tool.
+  - test/plugins/__init__.py defines TestPlugin / TestResult /
+    TestContext. Plugins receive a live MCP session and (optionally) a
+    TestContext for cross-plugin state via `ctx.shared`.
+  - `make dev-coverage` spawns the test server under coverage.py,
+    runs the plugin suite, and prints line/branch coverage. Use it
+    to confirm your new tool's lines are actually exercised.
+  - `make test-cluster` runs the same suite against the in-cluster
+    test sidecar via auto-managed `kubectl port-forward`.
+
+Read pattern://testing for the full contract: signatures, ordering
+via depends_on/run_after, ctx.shared conventions, the operational-
+error helper, and gotchas (AnyUrl conversion, contents vs content,
+preferring "Error: ..." returns over raises).
 
 ========================================================================
 TOOLS

@@ -1,0 +1,209 @@
+"""
+STARTER PLUGIN — copy this file to test/plugins/test_<your_tool>.py and
+adapt it when you add a new tool to src/{{ server_name_snake }}_tools.py.
+
+WHY THIS FILE EXISTS
+--------------------
+The test runner discovers any file matching `test/plugins/test_*.py` that
+defines a class derived from `TestPlugin`. Each plugin gets a live MCP
+session and (optionally) a TestContext, runs an assertion, and returns a
+TestResult. There is no shared fixture system — each plugin owns its
+setup, ordering is via `depends_on` / `run_after`, and cross-plugin state
+flows through `ctx.shared`.
+
+WHAT TO CHANGE WHEN ADAPTING
+----------------------------
+1. Class name      → `Test<YourToolPascalCase>`
+2. `tool_name`     → exact name you registered with @mcp.tool(name="...")
+3. `description`   → one-line plain-English summary (shown in `--help`-style
+                     plugin discovery output)
+4. `depends_on`    → list of plugin class names that must PASS before this
+                     one runs. Failure cascades — dependents are skipped.
+5. `run_after`     → soft ordering only; this plugin still runs even if the
+                     listed plugins fail. Use for "create then list" pairs
+                     where the list test is informative even on create
+                     failure.
+6. The body of `test()`:
+     - Call `await session.call_tool("<tool_name>", arguments={...})`.
+     - Pull text out via `result.content[0].text` (with the hasattr guard
+       below — Pydantic shapes vary across MCP SDK versions).
+     - Parse JSON if your tool returns it; otherwise grep for substrings.
+     - Assert the SUCCESS shape AND at least one ERROR path (negative test
+       — pass deliberately bad inputs and confirm the error response is
+       what you intended, not a 500 / traceback).
+     - Use `ctx.shared` to publish identifiers (cluster name, project_id,
+       resource UID) that downstream plugins should reuse. Keys you set
+       become readable by any later plugin that lists you in `run_after`
+       or `depends_on`.
+
+THINGS TO TEST FOR EVERY NEW TOOL
+---------------------------------
+For each new @mcp.tool you add to src/{{ server_name_snake }}_tools.py,
+write at minimum:
+  • happy path — valid inputs, assert the response shape (not just "no
+    exception"). If the tool returns JSON, json.loads it and check
+    specific keys; if it returns prose, check for distinctive substrings.
+  • at least one error path — bad input, missing resource, unauthorized
+    namespace. The tool should return an error STRING (preferred, no
+    server-side traceback) or the response should have isError=True.
+    Both shapes are valid; the assertion below handles both.
+  • for create/update tools: a follow-up "list" or "get" plugin
+    (depends_on=[...this plugin...]) that confirms the side effect.
+  • for tools whose output is large: assert size is bounded
+    (`assert len(text) < SOME_LIMIT`) — runaway output crowds out other
+    tool results in model context.
+
+TOOLS THAT TOUCH KUBERNETES
+---------------------------
+The test sidecar runs with the chart's RBAC. If your tool touches a
+ClusterRole or namespace your test cluster doesn't grant, the response
+body will include a 403 Forbidden message. Use the
+`check_for_operational_error` helper imported from `plugins` to detect
+those — see plugin_base.py.
+"""
+from plugins import TestPlugin, TestResult, TestContext, check_for_operational_error
+from typing import Optional
+import json
+import time
+
+
+class TestExampleCustomTool(TestPlugin):
+    """Worked example — replace `example_tool` with your real tool name."""
+
+    # The exact name passed to @mcp.tool(name="...") in your tools module.
+    tool_name = "example_tool"
+    description = "Verifies example_tool returns the expected shape and rejects bad input"
+
+    # Hard dependencies: tests that MUST pass before this runs. If a
+    # dependency fails, the runner skips this plugin and reports it as
+    # failed. Common pattern: a "create" test depends on "list" so we know
+    # the API surface is reachable before we mutate state.
+    depends_on = []  # e.g. ["TestListResources"]
+
+    # Soft ordering: run after these but don't skip on their failure.
+    run_after = []   # e.g. ["TestCreateExample"]
+
+    async def test(self, session, ctx: Optional[TestContext] = None) -> TestResult:
+        start_time = time.time()
+
+        # ----------------------------------------------------------------
+        # 1) HAPPY PATH — valid arguments, assert the response shape.
+        # ----------------------------------------------------------------
+        try:
+            result = await session.call_tool(
+                self.tool_name,
+                arguments={
+                    # Replace with your tool's actual arguments. Use values
+                    # that match the test cluster the sidecar runs in.
+                    "namespace": "default",
+                },
+            )
+        except Exception as e:
+            return TestResult(
+                plugin_name=self.get_name(),
+                tool_name=self.tool_name,
+                passed=False,
+                message=f"{self.tool_name} call raised",
+                error=str(e),
+                duration_ms=(time.time() - start_time) * 1000,
+            )
+
+        # MCP responses carry a list of content parts. Most tools return a
+        # single text part; the hasattr guard handles older/newer SDKs
+        # where the shape moves slightly.
+        text = result.content[0].text if (
+            hasattr(result, "content") and result.content
+        ) else str(result)
+
+        # Detect operational errors (RBAC, network, k8s API) in the
+        # response body — the tool can return success at the MCP layer
+        # while the underlying operation failed.
+        is_op_err, op_err = check_for_operational_error(text)
+        if is_op_err:
+            return TestResult(
+                plugin_name=self.get_name(),
+                tool_name=self.tool_name,
+                passed=False,
+                message=f"{self.tool_name} returned an operational error",
+                error=op_err,
+                duration_ms=(time.time() - start_time) * 1000,
+            )
+
+        # If your tool returns JSON, parse it and assert specific keys.
+        # If it returns prose (kubectl-style output), substring-match.
+        # Replace the assertion block below with checks specific to your
+        # tool's documented contract.
+        try:
+            data = json.loads(text)
+        except json.JSONDecodeError:
+            data = None
+
+        if data is not None:
+            for required_key in ("status",):  # ← replace with your keys
+                if required_key not in data:
+                    return TestResult(
+                        plugin_name=self.get_name(),
+                        tool_name=self.tool_name,
+                        passed=False,
+                        message=f"response missing required key: {required_key!r}",
+                        error=f"keys: {sorted(data.keys())}",
+                        duration_ms=(time.time() - start_time) * 1000,
+                    )
+        else:
+            # Non-JSON response — substring-match a distinctive marker.
+            for marker in ("expected-substring",):  # ← replace
+                if marker not in text:
+                    return TestResult(
+                        plugin_name=self.get_name(),
+                        tool_name=self.tool_name,
+                        passed=False,
+                        message=f"response missing expected marker: {marker!r}",
+                        error=text[:200],
+                        duration_ms=(time.time() - start_time) * 1000,
+                    )
+
+        # Publish anything downstream plugins will need. Example: if this
+        # tool created a Kubernetes resource and a later plugin will read
+        # it, stash the name here.
+        if ctx is not None and data is not None and "name" in data:
+            ctx.shared.setdefault("example_tool_created", []).append(data["name"])
+
+        # ----------------------------------------------------------------
+        # 2) ERROR PATH — at least one negative case so we know the tool
+        # rejects bad input cleanly (returns an "Error:" string OR
+        # isError=True), not a 500 / unhandled exception.
+        # ----------------------------------------------------------------
+        try:
+            err_result = await session.call_tool(
+                self.tool_name,
+                arguments={"namespace": "this-namespace-definitely-does-not-exist"},
+            )
+            err_text = err_result.content[0].text if (
+                hasattr(err_result, "content") and err_result.content
+            ) else str(err_result)
+            err_signaled = (
+                getattr(err_result, "isError", False)
+                or err_text.lower().startswith("error")
+                or "not found" in err_text.lower()
+            )
+        except Exception as e:
+            err_signaled = "not found" in str(e).lower() or "ValueError" in str(e)
+            err_text = str(e)
+
+        if not err_signaled:
+            return TestResult(
+                plugin_name=self.get_name(),
+                tool_name=self.tool_name,
+                passed=False,
+                message=f"{self.tool_name} accepted bad input instead of returning an error",
+                error=err_text[:200],
+                duration_ms=(time.time() - start_time) * 1000,
+            )
+
+        return TestResult(
+            plugin_name=self.get_name(),
+            tool_name=self.tool_name,
+            passed=True,
+            message=f"{self.tool_name}: happy path + error path both verified",
+            duration_ms=(time.time() - start_time) * 1000,
+        )

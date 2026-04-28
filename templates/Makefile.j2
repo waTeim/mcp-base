@@ -169,6 +169,23 @@ test: ## Run MCP tests against local test server
 	@echo "Running MCP tests..."
 	python test/test-mcp.py --url http://localhost:{{ port }}/test --no-auth
 
+.PHONY: test-cluster
+test-cluster: ## Run MCP tests against the in-cluster test sidecar (auto kubectl port-forward)
+	@echo "Running MCP tests against in-cluster service $(HELM_RELEASE) (default ns from kubectl context)..."
+	python test/test-mcp.py --no-auth --port-forward $(HELM_RELEASE)
+
+.PHONY: dev-deps
+dev-deps: ## Install test-only dependencies (coverage, httpx)
+	pip install -r test/requirements.txt
+
+.PHONY: dev-coverage
+dev-coverage: ## Run the test suite under coverage and print a report
+	python test/run-coverage.py
+
+.PHONY: dev-coverage-html
+dev-coverage-html: ## Run dev-coverage and also write coverage-html/index.html
+	python test/run-coverage.py --html
+
 #
 # Kubernetes targets
 #
