@@ -1,371 +1,314 @@
 # mcp-base
 
-An MCP server that helps AI agents build production-ready MCP servers for Kubernetes environments.
+An MCP server that helps AI agents build production-ready MCP servers for
+Kubernetes environments. Exposes templates, patterns, and tools via the
+[Model Context Protocol](https://modelcontextprotocol.io/) so an agent can
+scaffold a complete project (server code, tests, Helm chart, container
+build) in one tool call and customize it locally.
 
-## What It Does
+There are **two distinct workflows** documented here:
 
-**mcp-base** exposes templates, patterns, and tools via the [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) that enable AI agents to generate complete, deployable MCP server projects. Generated servers include:
+- [**A. Use mcp-base to generate a new MCP server**](#workflow-a--use-mcp-base-to-generate-a-new-mcp-server) — the typical path: an agent calls `generate_server_scaffold`, retrieves files via `resources/read`, customizes the tools module, writes tests, and deploys.
+- [**B. Work on mcp-base itself**](#workflow-b--work-on-mcp-base-itself) — for contributors. Same Makefile / coverage / port-forward harness as a generated project, because mcp-base dogfoods its own templates.
 
-- FastMCP-based HTTP server with OAuth authentication
-- Test server with direct OIDC authentication
-- Helm chart with Redis session storage
-- Plugin-based test framework
-- Docker container build
-- Kubernetes RBAC configuration
-- Versioned prompt management with ConfigMap storage and hot-reload
+The two workflows share concepts. The [Shared concepts](#shared-concepts)
+section below describes them once.
 
-## Quick Start
+---
 
-### 1. Run mcp-base
+## Shared concepts
+
+### Canonical project config (`mcp-project.yaml`)
+
+Every project — mcp-base itself and every server generated from it — has a
+single `mcp-project.yaml` at the repo root that is the source of truth for
+build and deployment defaults:
+
+```yaml
+project:
+  name: my-server
+  chartName: my-server
+ports:
+  main: 4200      # production server port
+  test: 4201      # no-auth test sidecar port
+build:
+  registry: ghcr.io/your-org
+  imageName: my-server
+  testImageName: my-server-test
+  tag: latest
+  platform: linux/amd64
+  containerTool: docker
+deployment:
+  helmRelease: my-server
+  namespace: default
+  serviceType: ClusterIP
+  testSidecarEnabled: true
+```
+
+Everything downstream derives from this file:
+
+```
+mcp-project.yaml
+   │
+   │  python bin/sync-config.py
+   ▼
+make.env  ──►  Makefile (REGISTRY, IMAGE_NAME, HELM_RELEASE, MCP_PORT, ...)
+   │
+   ▼
+test/test-mcp.py reads ports.* directly for --url / --local-port defaults
+chart/values.yaml carries the chart's *defaults* (matching ports.*)
+<helmRelease>.yaml at repo root is the per-release values overlay,
+   passed to helm via `-f $(HELM_VALUES_FILE)`. NOT generated — edit directly.
+```
+
+Edit `mcp-project.yaml`, run `python bin/sync-config.py` (or `make config`),
+and every other artifact stays consistent. Don't hand-edit `make.env`.
+
+### No-auth test sidecar
+
+The Helm chart deploys a sidecar container that runs the test server with
+`--no-auth`, exposed at `/test` over ClusterIP only (never via Ingress).
+The sidecar runs a *separate* test image — built by `make build-test`
+`FROM` the production image, with the `*_test_server.py` entrypoint added.
+The chart auto-derives the test image repository from the main image by
+replacing the trailing `-server` suffix with `-test-server`.
+
+A mock identity (`sub`, `iss`) is injected by `NoAuthMiddleware`, so tools
+that depend on `MCPContext.user_id` keep working. The production server
+(`/mcp`) still requires real OIDC.
+
+### Resource-first scaffold retrieval
+
+`generate_server_scaffold` returns a *manifest* — `project_id`, `artifacts`
+(path + URI + sha256 + metadata), `retrieval_contract`, `workflow`. Bulk
+file bytes flow through `resources/read("scaffold://<id>/<path>")` so they
+stay out of model context. Each on-disk file must hash-match the manifest;
+on any retrieval failure, the agent stops and writes
+`SCAFFOLD_RETRIEVAL_FAILURE.md` rather than reconstructing or substituting.
+
+### Required tests
+
+Every `@mcp.tool` you add must have a corresponding plugin under
+`test/plugins/test_<your_tool>.py` covering both a happy path and at least
+one error path. The scaffold ships `test/plugins/test_example.py` as a
+heavily-commented starter — copy it per tool. See
+[`patterns/testing.md`](patterns/testing.md) for the full contract.
+
+---
+
+## Workflow A — Use mcp-base to generate a new MCP server
+
+This is the path agents use. The mcp-base server has to be running
+somewhere the agent's MCP client can reach — locally for development or
+deployed to the cluster.
+
+### 1. Connect to mcp-base
+
+The simplest path is to run mcp-base locally and point Claude Desktop /
+Codex / your agent at it:
 
 ```bash
-# Clone and install
 git clone https://github.com/your-org/mcp-base.git
 cd mcp-base
 pip install -r requirements.txt
-
-# Start server
-python src/mcp_base_server.py --port 4207
+python src/mcp_base_server.py --port 4200
 ```
 
-### 2. Connect with Claude Desktop
-
-Add to `~/.config/claude/claude_desktop_config.json`:
+Add to your MCP client's config:
 
 ```json
 {
   "mcpServers": {
-    "mcp-base": {
-      "url": "http://localhost:4207/mcp"
-    }
+    "mcp-base": { "url": "http://localhost:4200/mcp" }
   }
 }
 ```
 
-### 3. Generate a Server
+### 2. Generate the scaffold
 
-Ask Claude:
-> "Use mcp-base to generate an MCP server called 'My Kubernetes Manager' that manages pods"
+Ask the agent (or call the tool directly):
 
-Or call the tool directly:
-```
-generate_server_scaffold(server_name="My Kubernetes Manager")
-```
+> Use mcp-base to generate an MCP server called "My Kubernetes Manager"
+> that manages pods.
 
-## Features
+The agent will:
 
-### ⚠️ Resources vs Tools - Critical Distinction
+1. Call `generate_server_scaffold(server_name="My Kubernetes Manager")` →
+   gets a manifest of ~40 files.
+2. For each artifact: read bytes via `resources/read("scaffold://...")`,
+   write to disk, verify sha256 matches the manifest entry.
+3. Stop and emit `SCAFFOLD_RETRIEVAL_FAILURE.md` if any hash mismatches —
+   never reconstruct from memory.
 
-**Reading resources does NOT create files. You must call tools to generate actual source code.**
+### 3. Configure
 
-- **Resources** provide read-only templates and documentation
-- **Tools** actually generate and write files to disk
-
-### Resources (Read-Only - Informational)
-
-Resources return template content or documentation as strings. Reading them creates **NO files on disk**.
-
-| URI | Description |
-|-----|-------------|
-| `pattern://generation-workflow` | **⚠️ Generation workflow (Resources vs Tools)** |
-| `pattern://architecture` | Architecture overview and design patterns |
-| `pattern://fastmcp-tools` | Tool implementation patterns |
-| `pattern://authentication` | Auth0/OIDC setup guide |
-| `pattern://testing` | Test framework patterns |
-| `pattern://prompt-management` | Versioned prompts with ConfigMap and hot-reload |
-| `template://server/*` | Server code templates (as strings) |
-| `template://helm/*` | Helm chart templates (as strings) |
-| `template://container/*` | Docker build templates (as strings) |
-
-### Tools (Scaffold Generation — Resource-First)
-
-Scaffold retrieval is **resource-first**: bulk file bytes flow through
-MCP resources; tools return only compact coordination metadata. This
-keeps artifact contents out of the model context.
-
-- **Primary — bulk bytes:**
-  `resources/read("scaffold://{project_id}/{path}")`. Each artifact is
-  registered as a concrete MCP resource at generation time and has
-  `sha256` in the manifest for byte-parity verification.
-- **Primary — coordination metadata:**
-  `list_scaffold_artifact_metadata` and `read_scaffold_artifact_metadata`.
-- **Last-resort fallback only:** `read_scaffold_artifact` returns full
-  contents inside tool output (every byte pulled into model context) and
-  is intended **only** for MCP clients that cannot invoke
-  `resources/read` at all — e.g. OpenAI's `codex_apps` proxy, which
-  forwards only tools and drops resources/prompts entirely. **Do not
-  use this tool if `resources/read` is available.**
-
-| Tool | Description | Puts bytes in model context? |
-|------|-------------|------------------------------|
-| `generate_server_scaffold` | Create project; returns compact manifest (path, uri, sha256, operational fields, role) | ❌ No — no file contents |
-| `list_scaffold_artifact_metadata` | Manifest fields + AST-extracted API surface for every Python file (symbols with signatures/decorators/docstrings, exports) | ❌ No — no file contents |
-| `read_scaffold_artifact_metadata` | Same shape for a single file; adds `imports` | ❌ No — no file contents |
-| `list_artifacts` | Lightweight path + URI listing | ❌ No |
-| `read_scaffold_artifact` | **LAST-RESORT fallback** — full bytes in tool output. Use only when `resources/read` is unavailable (e.g. tool-only proxies like OpenAI's `codex_apps`). | ⚠️ Yes — blows model context on large scaffolds |
-| `render_template` | Render individual template to string | ⚠️ Returns string — **not** a scaffold substitute |
-| `list_templates` | List available templates | ❌ No |
-| `list_patterns` | List pattern documentation | ❌ No |
-| `get_pattern` | Get specific pattern docs | ❌ No |
-
-### Generated Scaffold Resources
-
-Every generated artifact is available as an MCP resource. Bulk byte
-transfer should go through these, not through tool output:
-
-| URI | Description |
-|-----|-------------|
-| `scaffold://{project_id}/{path}` | Concrete per-artifact resource — appears in `resources/list` |
-| `artifact://{project_id}/{path}` | Alias for legacy clients that captured `artifact://` URIs |
-
-## Generated Server Structure
-
-```
-my-server/
-├── src/
-│   ├── my_server.py           # Main server (OAuth)
-│   ├── my_test_server.py      # Test server (OIDC)
-│   ├── my_server_tools.py     # Shared tools & resources
-│   ├── auth_fastmcp.py        # OAuth provider
-│   ├── auth_oidc.py           # OIDC middleware
-│   ├── mcp_context.py         # User context extraction
-│   └── prompt_registry.py     # Versioned prompt management
-├── bin/                       # Configuration scripts
-│   └── configure-make.py     # Generate make.env for Makefile
-├── test/
-│   ├── plugins/               # Test plugins
-│   ├── test-mcp.py           # Test runner
-│   └── get-user-token.py     # Token acquisition
-├── chart/                     # Helm chart
-├── Dockerfile
-├── Makefile
-└── requirements.txt
-```
-
-### Scaffold vs CLI Scripts
-
-**In scaffold (`bin/`):**
-
-| Script | Purpose |
-|--------|---------|
-| `configure-make.py` | Generate make.env for Makefile configuration |
-
-**Via mcp-base CLI** (install with `pip install mcp-base`):
-
-| Command | Purpose |
-|---------|---------|
-| `mcp-base setup-oidc` | Configure OIDC provider (Auth0, Dex, Keycloak, etc.) |
-| `mcp-base create-secrets` | Create Kubernetes secrets |
-| `mcp-base add-user` | Add users with assigned roles |
-| `mcp-base setup-rbac` | Set up Kubernetes RBAC resources |
-
-## Configuration Options
-
-### generate_server_scaffold
-
-```python
-generate_server_scaffold(
-    server_name="My MCP Server",      # Required: Human-readable name
-    port=4207,                         # HTTP port (default: 4207)
-    default_namespace="default",       # K8s namespace (default: "default")
-    operator_cluster_roles="role1,role2",  # ClusterRoles to bind
-    include_helm=True,                 # Include Helm chart
-    include_test=True,                 # Include test framework
-    include_bin=True,                  # Include utility scripts
-    output_description="summary"       # "summary" or "full"
-)
-```
-
-### render_template
-
-```python
-render_template(
-    template_path="server/entry_point.py.j2",
-    server_name="My Server",
-    port=4207,
-    default_namespace="default"
-)
-```
-
-## Deployment
-
-### Local Development
+Edit the canonical project config first. The defaults baked into
+`mcp-project.yaml` are placeholders:
 
 ```bash
-# Main server (OAuth)
-python src/mcp_base_server.py --port 4207
-
-# Health check
-curl http://localhost:4207/healthz
+$EDITOR mcp-project.yaml          # set registry, image names, namespace, ports
+python bin/sync-config.py         # regenerate make.env
+$EDITOR <helmRelease>.yaml        # release values overlay (image.repository,
+                                   # ingress, OIDC issuer/audience, ...)
 ```
 
-### Docker
+### 4. Customize tools
+
+Add `@mcp.tool` / `@mcp.resource` / `@mcp.prompt` implementations to
+`src/<server>_tools.py`. The scaffold ships standard plugins for
+list_resources / read_resource / list_prompts / health endpoints; extend
+them only when your server's resource surface changes.
+
+### 5. Write tests (required)
+
+For every new tool, copy `test/plugins/test_example.py` to
+`test/plugins/test_<your_tool>.py`. Adapt the body — happy path AND at
+least one error path. Run:
 
 ```bash
-docker build -t mcp-base .
-docker run -p 4207:4207 mcp-base
+make dev-deps        # one-time: pip install -r test/requirements.txt
+make dev-run-test    # in one terminal — local no-auth test server
+make test            # in another — runs the plugin suite
+make dev-coverage    # full pipeline under coverage.py with line/branch report
 ```
 
-### Kubernetes with Helm
+Confirm the lines you added show up as covered before declaring the tool
+done. See [`patterns/testing.md`](patterns/testing.md) for the contract,
+the gotchas (`AnyUrl` → `str`, `result.contents` vs `result.content`,
+returning error strings vs raising), and the customization checklist.
+
+### 6. Deploy
 
 ```bash
-# Configure
-cp chart/values.yaml chart/my-values.yaml
-# Edit my-values.yaml with your Auth0 credentials
-
-# Deploy
-helm install mcp-base chart/ -f chart/my-values.yaml
+make build           # docker build with $(IMAGE_FULL) tag
+make build-test      # docker build of the test image (FROM main image)
+make push            # push main image
+make push-test       # push test image
+make helm-install    # helm upgrade --install with -f <release>.yaml
 ```
 
-## Authentication Setup
+Helm install does **not** pass `--create-namespace` (assumes cluster-admin
+rights you may not have) or `--wait` (blocks on crashing sidecars and
+hides them). Pre-create the namespace if needed; check with `make k8s-pods`.
 
-Generated servers use Auth0 for authentication. Required configuration:
-
-1. **Create Auth0 Application** (Machine-to-Machine or SPA)
-2. **Create Auth0 API** with appropriate scopes
-3. **Configure environment variables:**
+### 7. Test the deployed server
 
 ```bash
-export OIDC_ISSUER="https://your-tenant.auth0.com"
-export OIDC_AUDIENCE="https://your-api-identifier"
-export AUTH0_CLIENT_ID="your-client-id"
-export AUTH0_CLIENT_SECRET="your-client-secret"  # For M2M only
+make test-cluster        # auto kubectl port-forward → /test on the no-auth sidecar
+make test-cluster-prod   # auto port-forward → /mcp on the auth-enforcing endpoint
+                         # (uses /tmp/user-token.txt)
 ```
 
-Or use the setup script:
-```bash
-python bin/setup-auth0.py --token YOUR_MANAGEMENT_API_TOKEN
-```
+Both targets pass named arguments (`--namespace`, `--service`, `--local-port`,
+`--remote-port`) derived from `make.env`. The runner picks `/test` for
+`--no-auth` and `/mcp` otherwise from the same flag set.
 
-## Testing Generated Servers
+---
 
-```bash
-# Get user token (opens browser)
-./test/get-user-token.py
+## Workflow B — Work on mcp-base itself
 
-# Run tests against test server
-./test/test-mcp.py --url http://localhost:8001/test \
-    --token-file /tmp/user-token.txt
+For contributors. mcp-base dogfoods every pattern it teaches: it has its
+own `mcp-project.yaml`, its own `bin/sync-config.py`, the same Makefile /
+coverage / port-forward harness, the same chart structure.
 
-# Output formats
-./test/test-mcp.py --url http://localhost:8001/test \
-    --output results.json --format json
-
-./test/test-mcp.py --url http://localhost:8001/test \
-    --output results.xml --format junit
-```
-
-## Development Mode (No-Auth)
-
-For rapid development, debugging, and testing new features without authentication overhead, both mcp-base and generated servers support a **no-auth mode**.
-
-### When to Use No-Auth Mode
-
-- **Adding new features** - Test new tools/resources without auth setup
-- **Debugging issues** - Isolate problems from authentication concerns
-- **CI/CD pipelines** - Run automated tests without credentials
-- **Local development** - Quick iteration without browser auth flow
-- **AI agent testing** - Allow AI assistants to test changes directly
-
-### Starting the Server (No-Auth)
+### Setup
 
 ```bash
-# mcp-base test server
-python src/mcp_base_test_server.py --no-auth --port 8001
-
-# With custom identity (for user-specific testing)
-python src/mcp_base_test_server.py --no-auth --identity "dev-user" --port 8001
+git clone https://github.com/your-org/mcp-base.git
+cd mcp-base
+pip install -r requirements.txt
+pip install -r test/requirements.txt   # coverage, httpx for the test harness
 ```
 
-### Running Tests (No-Auth)
+### Run locally
 
 ```bash
-# Test against no-auth server
-./test/test-mcp.py --url http://localhost:8001/test --no-auth
+# Production (auth-enforcing) server:
+python src/mcp_base_server.py --port 4200
 
-# With debug logging for troubleshooting
-./test/test-mcp.py --url http://localhost:8001/test --no-auth \
-    --debug-log /tmp/mcp-debug.log
+# OR no-auth test server (for local testing without OIDC setup):
+python src/mcp_base_test_server.py --no-auth --port 4201
 ```
 
-### How No-Auth Mode Works
+### Make changes
 
-1. **Server side**: `NoAuthMiddleware` replaces OIDC middleware and injects mock user claims
-2. **Test runner**: `--no-auth` flag skips token acquisition
-3. **Identity preserved**: Tools that need user context still receive a mock identity
+Most customization happens in two places:
 
-Mock claims provided:
-- `sub`, `preferred_username`, `name` → identity value (default: "test-user")
-- `email` → `{identity}@test.local`
-- `iss` → `http://localhost/no-auth`
-- `scope` → `openid profile email`
+- `src/mcp_base_tools.py` — the tools, resources, and pattern registry.
+  Adding a new tool here means updating both `register_tools` and the
+  artifact metadata role registry at the top of the file (so generated
+  scaffolds get sensible `customization_relevance` / role hints).
+- `templates/` — the Jinja templates that ship in every generated
+  scaffold. Editing `templates/Makefile.j2`, `templates/test/`, or
+  `templates/helm/` reshapes what every newly-generated project gets.
 
-### Debug Logging
-
-For diagnosing test failures, enable debug logging:
+### Test
 
 ```bash
-./test/test-mcp.py --url http://localhost:8001/test --no-auth \
-    --debug-log /tmp/mcp-debug.log
-
-# View the detailed request/response log
-cat /tmp/mcp-debug.log
+make test            # plugin suite against http://localhost:4201/test
+make dev-coverage    # full pipeline under coverage.py
+make dev-coverage-html
 ```
 
-The debug log captures all MCP protocol interactions with full request arguments and response data.
+The plugin suite covers the actual tools mcp-base exposes
+(`generate_server_scaffold`, `list_artifacts`, `read_scaffold_artifact`,
+`render_template`, `list_templates`, `list_patterns`, etc.). New tools
+should ship with new plugins under `test/plugins/`.
 
-## Architecture
-
-See [ARCHITECTURE.md](ARCHITECTURE.md) for detailed documentation on:
-
-- Dual-server pattern (Main + Test servers)
-- Shared tools module architecture
-- Authentication flows
-- MCP protocol type handling
-- Common pitfalls and solutions
-
-## Key Design Decisions
-
-1. **Dual Servers**: Separate OAuth (production) and OIDC (testing) endpoints enable headless automated testing while maintaining full OAuth security for production.
-
-2. **Shared Tools Module**: Both servers import from a single `*_tools.py` file ensuring identical behavior.
-
-3. **Plugin-Based Testing**: Tests are discovered automatically from `test/plugins/test_*.py` files.
-
-4. **Redis Session Storage**: MCP tokens are stored encrypted in Redis for scalability.
-
-## Development
-
-### Adding Templates
-
-1. Create `.j2` file in `templates/`
-2. Register resource in `src/mcp_base_tools.py`
-3. Add to scaffold generation if needed
-
-### Adding Patterns
-
-1. Create `.md` file in `patterns/`
-2. Register resource in `src/mcp_base_tools.py`
-
-### Running Tests
+When working on Jinja templates, regenerate a smoke scaffold to confirm
+the rendered output is valid Python / valid YAML:
 
 ```bash
-# With authentication
-./test/get-user-token.py
-./test/test-mcp.py --url http://localhost:8001/test \
-    --token-file /tmp/user-token.txt
+python -c "
+import asyncio, ast, sys
+sys.path.insert(0, 'src')
+from mcp_base_tools import generate_server_scaffold_impl
+from artifact_store import artifact_store
+async def main():
+    res = await generate_server_scaffold_impl(server_name='Smoke Test')
+    pid = res['project_id']
+    for a in res['artifacts']:
+        if a['path'].endswith('.py'):
+            ast.parse(artifact_store.get(pid, a['path']).content)
+    print(f'OK: {res[\"file_count\"]} files all parse')
+asyncio.run(main())
+"
 ```
 
-## Reference Implementation
+### Configure + deploy
 
-See `example/cnpg-mcp/` for a complete working MCP server managing CloudNativePG PostgreSQL clusters.
+mcp-base itself can be deployed to a cluster as an MCP server (so a
+hosted Claude can use it). The workflow is the same as Workflow A:
 
-## Resources
+```bash
+$EDITOR mcp-project.yaml      # registry, image names, namespace, ports
+python bin/sync-config.py     # regenerate make.env
+$EDITOR mcp-base.yaml         # release values overlay (already exists)
+make build && make build-test
+make push  && make push-test
+make helm-install             # uses -f mcp-base.yaml
+make test-cluster             # smoke against the deployed test sidecar
+```
 
-- [MCP Protocol Specification](https://modelcontextprotocol.io/)
-- [FastMCP Documentation](https://github.com/jlowin/fastmcp)
-- [Auth0 Documentation](https://auth0.com/docs)
+For OIDC setup, see [`patterns/authentication.md`](patterns/authentication.md)
+and [`docs/KEYCLOAK-HOWTO.md`](docs/KEYCLOAK-HOWTO.md).
+
+---
+
+## Reference
+
+- [`docs/workflows.md`](docs/workflows.md) — deeper reference for both workflows: dataflow diagrams, smoke-test snippets, "how do I change …" cheatsheet
+- [`patterns/generation-workflow.md`](patterns/generation-workflow.md) — full agent workflow for generating a server (read this if you're an agent using mcp-base)
+- [`patterns/testing.md`](patterns/testing.md) — test plugin contract, ctx.shared coordination, coverage workflow, what every new tool must cover
+- [`patterns/fastmcp-tools.md`](patterns/fastmcp-tools.md) — implementing tools with `@with_mcp_context`, `MCPContext`, error-string convention
+- [`patterns/authentication.md`](patterns/authentication.md) — Pattern A (Auth0/OIDC proxy) vs Pattern B (Keycloak DCR) split
+- [`patterns/helm-chart.md`](patterns/helm-chart.md) — chart structure, test sidecar derivation, RBAC bindings
+- [`patterns/deployment.md`](patterns/deployment.md) — Kubernetes deployment, the `--create-namespace` / `--wait` rationale
+- [`patterns/prompt-management.md`](patterns/prompt-management.md) — versioned prompts with ConfigMap hot-reload
+- [`ARCHITECTURE.md`](ARCHITECTURE.md) — internals: artifact store, Jinja env, scaffold metadata pipeline
+- [`CLAUDE.md`](CLAUDE.md) — guidance for Claude Code working in this repo
+- [`docs/cli-integration-contract.md`](docs/cli-integration-contract.md) — schemas for `mcp-base` CLI artifacts (`oidc-config.json`, etc.)
 
 ## License
 
-[Your License Here]
+See [LICENSE](LICENSE).

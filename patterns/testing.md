@@ -44,21 +44,32 @@ test/
     └── test_<your_tool>.py      # ← write one per @mcp.tool you add
 ```
 
-Two ways to run:
+Three ways to run:
 
 ```bash
 # Local, against a no-auth test server you spawn:
-make dev-run-test          # in one terminal
-make test                  # in another
+make dev-run-test          # in one terminal — listens on $(MCP_TEST_PORT)
+make test                  # in another — hits http://localhost:$(MCP_TEST_PORT)/test
 
 # In-cluster (auto kubectl port-forward to the test sidecar):
-make test-cluster
+make test-cluster          # --no-auth, targets $(MCP_TEST_PORT)/test
+
+# In-cluster against the production endpoint (requires a JWT):
+./test/get-user-token.py                                       # writes /tmp/user-token.txt
+make test-cluster-prod                                          # auth-enforcing, targets $(MCP_PORT)/mcp
 
 # Local, under coverage:
 make dev-deps              # one-time: pip install -r test/requirements.txt
 make dev-coverage          # spawns test server under coverage, runs tests, reports
 make dev-coverage-html     # also writes coverage-html/index.html
 ```
+
+`MCP_PORT` and `MCP_TEST_PORT` come from `make.env`, which is regenerated
+by `bin/sync-config.py` from `mcp-project.yaml`. If you need to change the
+ports, edit `mcp-project.yaml` (`ports.main` / `ports.test`) and run
+`python bin/sync-config.py`. The test runner also reads `ports.*` directly
+from `mcp-project.yaml` for its `--url` / `--local-port` / `--remote-port`
+defaults.
 
 ---
 
@@ -106,7 +117,7 @@ The runner inspects each plugin's `test()` signature and only passes
 ```python
 @dataclass
 class TestContext:
-    base_url: str                   # e.g. "http://127.0.0.1:8001/test"
+    base_url: str                   # e.g. "http://127.0.0.1:4201/test"
     shared:   Dict[str, Any] = field(default_factory=dict)
 ```
 
@@ -284,21 +295,41 @@ production.
 ## In-cluster testing
 
 The Helm chart enables a sidecar container that runs the test server in
-`--no-auth` mode behind ClusterIP only (never via Ingress). To test
-against it:
+`--no-auth` mode behind ClusterIP only (never via Ingress). The sidecar
+runs the **test image** (built FROM the main image, with the
+`*_test_server.py` entrypoint added). The chart auto-derives the test
+image name from `image.repository` by replacing the trailing
+`-server` suffix with `-test-server`; override `testSidecar.image.repository`
+in your release values overlay if your registry uses a different
+naming convention.
 
 ```bash
 make test-cluster
 # Equivalent to:
-# python test/test-mcp.py --no-auth --port-forward <release>
+# python test/test-mcp.py --no-auth --port-forward \
+#   --namespace $(HELM_NAMESPACE) \
+#   --service $(HELM_SERVICE) \
+#   --local-port $(MCP_TEST_PORT) \
+#   --remote-port $(MCP_TEST_PORT)
 ```
 
-`--port-forward [namespace/]service[:port]` spawns and tears down
-`kubectl port-forward` automatically. Namespace defaults to the current
-kubectl context's namespace; port defaults to the test sidecar port.
+`--port-forward` runs `kubectl port-forward` and tears it down on exit.
+Namespace and service come from the Makefile (which gets them from
+`mcp-project.yaml` via `bin/sync-config.py`). The runner picks
+`/test` for `--no-auth` and `/mcp` otherwise, so the same flags work for
+both the no-auth sidecar and the auth-enforcing production endpoint.
 
 The mock identity (`sub`, `iss`) is injected by `NoAuthMiddleware` so
 tools that rely on `MCPContext.user_id` keep working.
+
+### Production endpoint test
+
+To exercise the production (auth-enforcing) endpoint with a JWT:
+
+```bash
+./test/get-user-token.py                  # writes /tmp/user-token.txt
+make test-cluster-prod                    # forwards $(MCP_PORT), targets /mcp
+```
 
 ---
 

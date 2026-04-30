@@ -23,6 +23,13 @@ FROM ${BASE_IMAGE}
 LABEL component="test-sidecar"
 LABEL description="{{ server_description }} - Test Server (no-auth, in-cluster only)"
 
+# The production image deliberately omits the test server entrypoint to keep
+# the production attack surface clean. Add it here for the test image only.
+USER root
+COPY src/{{ server_name_snake }}_test_server.py /app/{{ server_name_snake }}_test_server.py
+RUN chown mcpuser:mcpuser /app/{{ server_name_snake }}_test_server.py
+USER mcpuser
+
 EXPOSE {{ port + 1 }}
 
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \

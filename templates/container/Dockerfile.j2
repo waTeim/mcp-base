@@ -29,7 +29,13 @@ COPY requirements.txt .
 # Install Python dependencies
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy application code
+# Copy canonical project config so server + healthcheck can read ports/etc.
+COPY mcp-project.yaml ./mcp-project.yaml
+
+# Copy production application code. NOTE: the test server entrypoint
+# ({{ server_name_snake }}_test_server.py) is intentionally NOT copied here
+# — it ships only in the test image (test/Dockerfile, FROM this image)
+# so production containers have no test-only attack surface.
 COPY src/{{ server_name_snake }}_server.py .
 COPY src/{{ server_name_snake }}_tools.py .
 COPY src/mcp_context.py .

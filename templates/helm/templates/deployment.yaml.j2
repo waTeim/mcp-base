@@ -101,11 +101,22 @@ spec:
         # The Service exposes this port as ClusterIP only and the Ingress does
         # NOT route to it, so it is reachable only inside the cluster or via
         # `kubectl port-forward`.
+        #
+        # IMAGE DERIVATION: the sidecar must run the *test* image (which
+        # contains the *_test_server.py entrypoint), not the main image.
+        # If testSidecar.image.repository is empty (the default), derive the
+        # test image from .Values.image.repository by replacing the trailing
+        # "-server" suffix with "-test-server". Examples:
+        #   wateim/myproj-server  →  wateim/myproj-test-server
+        # Set testSidecar.image.repository explicitly to override.
+        {{- $testImageRepo := .Values.testSidecar.image.repository | default (regexReplaceAll "-server$" .Values.image.repository "-test-server") }}
+        {{- $testImageTag := .Values.testSidecar.image.tag | default (.Values.image.tag | default (printf "v%s" .Chart.AppVersion)) }}
+        {{- $testImagePullPolicy := .Values.testSidecar.image.pullPolicy | default .Values.image.pullPolicy }}
         - name: {{ .Chart.Name }}-test
           securityContext:
             {{- toYaml .Values.securityContext | nindent 12 }}
-          image: '{{ .Values.testSidecar.image.repository | default .Values.image.repository }}:{{ .Values.testSidecar.image.tag | default (.Values.image.tag | default (printf "v%s" .Chart.AppVersion)) }}'
-          imagePullPolicy: {{ .Values.testSidecar.image.pullPolicy | default .Values.image.pullPolicy }}
+          image: '{{ $testImageRepo }}:{{ $testImageTag }}'
+          imagePullPolicy: {{ $testImagePullPolicy }}
           command: ["python", "{% endraw %}{{ module_name }}{% raw %}_test_server.py"]
           args:
             - "--no-auth"

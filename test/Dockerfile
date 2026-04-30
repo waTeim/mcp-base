@@ -21,8 +21,8 @@ FROM ${BASE_IMAGE}
 LABEL component="test-sidecar"
 LABEL description="MCP Test Server for MCP Base (no-auth, in-cluster only)"
 
-EXPOSE 4209
+EXPOSE 4201
 
-HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 CMD curl -f http://localhost:4209/healthz || exit 1
+HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 CMD curl -f http://localhost:4201/healthz || exit 1
 
-CMD ["python", "mcp_base_test_server.py","--no-auth","--identity","test-user","--host","0.0.0.0","--port","4209"]
+CMD ["python", "mcp_base_test_server.py","--no-auth","--identity","test-user","--host","0.0.0.0","--port","4201"]

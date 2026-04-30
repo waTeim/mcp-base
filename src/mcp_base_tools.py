@@ -335,7 +335,7 @@ _ROLE_RULES = [
         "customization_relevance": "low",
         "summary": "Plugin-based test runner entrypoint.",
         "customization_notes": [],
-        "verification_notes": ["./test/test-mcp.py --url http://localhost:8001/test --no-auth"],
+        "verification_notes": ["./test/test-mcp.py --url http://localhost:4201/test --no-auth"],
     }),
     (re.compile(r"^test/get-user-token\.py$"), {
         "role": "test_token_helper",
@@ -1419,7 +1419,7 @@ async def get_pattern_impl(name: str) -> str:
 async def render_template_impl(
     template_path: str,
     server_name: str,
-    port: int = 4207,
+    port: int = 4200,
     default_namespace: str = "default",
     chart_name: Optional[str] = None,
     operator_cluster_roles: Optional[str] = None,
@@ -1434,7 +1434,7 @@ async def render_template_impl(
     Args:
         template_path: Path to template (e.g., "server/entry_point.py.j2")
         server_name: Human-readable server name (e.g., "Kubernetes Manager MCP")
-        port: HTTP server port (default: 4207)
+        port: HTTP server port (default: 4200; test sidecar uses port+1=4201)
         default_namespace: Default Kubernetes namespace (default: "default")
         chart_name: Helm chart name (defaults to kebab-case of server_name)
         operator_cluster_roles: Comma-separated list of ClusterRoles to bind
@@ -1488,7 +1488,7 @@ async def render_template_impl(
 async def generate_server_scaffold_impl(
     server_name: str,
     output_description: Literal["full", "summary"] = "summary",
-    port: int = 4207,
+    port: int = 4200,
     default_namespace: str = "default",
     operator_cluster_roles: Optional[str] = None,
     include_helm: bool = True,
@@ -1579,7 +1579,7 @@ async def generate_server_scaffold_impl(
     Args:
         server_name: Human-readable server name (e.g., "Kubernetes Manager MCP")
         output_description: Deprecated - included for backward compatibility only (ignored)
-        port: HTTP server port (default: 4207)
+        port: HTTP server port (default: 4200; test sidecar uses port+1=4201)
         default_namespace: Default Kubernetes namespace
         operator_cluster_roles: Comma-separated ClusterRoles to bind (e.g., "my-operator-edit,other-operator-view")
         include_helm: Include Helm chart (default: True)
@@ -1681,14 +1681,35 @@ async def generate_server_scaffold_impl(
         ("Makefile.j2", "Makefile"),
     ]
 
-    # Bin scripts (coordinate with Dockerfile/Makefile)
+    # Project-level config (canonical source for build + deployment defaults)
+    # plus the release values overlay (deployment artifact at repo root).
+    project_config_templates = [
+        ("mcp-project.yaml.j2", "mcp-project.yaml"),
+        # The release values file is named after the helm release. The
+        # Makefile's HELM_VALUES_FILE default ($(HELM_RELEASE).yaml) picks
+        # it up automatically.
+        ("release-values.yaml.j2", f"{chart_name}.yaml"),
+    ]
+
+    # Bin scripts (coordinate with Dockerfile/Makefile/mcp-project.yaml)
     bin_templates = [
+        # sync-config is the canonical source-of-truth synchronizer:
+        # reads mcp-project.yaml, writes make.env.
+        ("bin/sync-config.py.j2", "bin/sync-config.py"),
+        # configure-make.py is now a compat wrapper that delegates to
+        # sync-config.py — kept so old docs/CI still work.
         ("bin/configure-make.py.j2", "bin/configure-make.py"),
         ("bin/smoke_test.py.j2", "bin/smoke_test.py"),
     ]
 
     # Process template files
-    for template_path, output_path in server_templates + container_templates + makefile + bin_templates:
+    for template_path, output_path in (
+        server_templates
+        + container_templates
+        + makefile
+        + project_config_templates
+        + bin_templates
+    ):
         try:
             template = jinja_env.get_template(template_path)
             files[output_path] = template.render(**variables)
@@ -2152,7 +2173,7 @@ def register_tools(mcp):
     async def render_template(
         template_path: str,
         server_name: str,
-        port: int = 4207,
+        port: int = 4200,
         default_namespace: str = "default",
         chart_name: Optional[str] = None,
         operator_cluster_roles: Optional[str] = None,
@@ -2173,7 +2194,7 @@ def register_tools(mcp):
     async def generate_server_scaffold(
         server_name: str,
         output_description: Literal["full", "summary"] = "summary",
-        port: int = 4207,
+        port: int = 4200,
         default_namespace: str = "default",
         operator_cluster_roles: Optional[str] = None,
         include_helm: bool = True,

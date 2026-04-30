@@ -559,7 +559,7 @@ _PORT_FORWARD_SPEC_RE = re.compile(
 
 
 def parse_port_forward_spec(
-    spec: str, default_port: int = 4209
+    spec: str, default_port: int = 4201
 ) -> Tuple[Optional[str], str, int]:
     """
     Parse `[namespace/]service[:port]` into (namespace, service, port).
@@ -572,7 +572,7 @@ def parse_port_forward_spec(
         raise ValueError(
             f"Invalid --port-forward spec: {spec!r}. "
             f"Expected [namespace/]service[:port] (e.g. 'mcp-base', "
-            f"'kube-system/mcp-base', 'mcp-base:4209')."
+            f"'kube-system/mcp-base', 'mcp-base:4201')."
         )
     namespace = m.group("namespace")  # None when unspecified
     service = m.group("service")
@@ -635,7 +635,7 @@ def kubectl_port_forward(
     Spawn `kubectl port-forward` for the duration of the context.
 
     Args:
-        spec: `[namespace/]service[:remote_port]`. Default port: 4209.
+        spec: `[namespace/]service[:remote_port]`. Default port: 4201.
         local_port: Bind to this port locally. If None, an OS-chosen free port.
         timeout: Seconds to wait for the local port to start accepting.
 
@@ -716,7 +716,7 @@ Examples:
 
   # Test the in-cluster test sidecar via auto-managed kubectl port-forward
   ./test-mcp.py --no-auth --port-forward mcp-base
-  ./test-mcp.py --no-auth --port-forward myns/mcp-base:4209
+  ./test-mcp.py --no-auth --port-forward myns/mcp-base:4201
 
   # Save test results to JSON file
   ./test-mcp.py --url http://localhost:8000 --output results.json
@@ -767,9 +767,9 @@ Environment Variables:
         metavar='[NS/]SERVICE[:PORT]',
         help='Spawn `kubectl port-forward` against this service for the test '
              'run, then tear it down. Namespace defaults to the current '
-             'kubectl context\'s namespace; default port: 4209 (the test '
+             'kubectl context\'s namespace; default port: 4201 (the test '
              'sidecar). Overrides --url with http://127.0.0.1:<local-port>/test. '
-             'Examples: mcp-base, kube-system/mcp-base, mcp-base:4209'
+             'Examples: mcp-base, kube-system/mcp-base, mcp-base:4201'
     )
     parser.add_argument(
         '--port-forward-local-port',

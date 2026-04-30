@@ -91,11 +91,19 @@ spec:
         # The Service exposes this port as ClusterIP only and the Ingress does
         # NOT route to it, so it is reachable only inside the cluster or via
         # `kubectl port-forward`.
+        #
+        # Test sidecar uses a SEPARATE image (built FROM the main image by
+        # `make build-test`). When testSidecar.image.repository is empty,
+        # derive it from .Values.image.repository by replacing the trailing
+        # "-server" suffix with "-test-server".
+        {{- $testImageRepo := .Values.testSidecar.image.repository | default (regexReplaceAll "-server$" .Values.image.repository "-test-server") }}
+        {{- $testImageTag := .Values.testSidecar.image.tag | default (.Values.image.tag | default (printf "v%s" .Chart.AppVersion)) }}
+        {{- $testImagePullPolicy := .Values.testSidecar.image.pullPolicy | default .Values.image.pullPolicy }}
         - name: {{ .Chart.Name }}-test
           securityContext:
             {{- toYaml .Values.securityContext | nindent 12 }}
-          image: "{{ .Values.testSidecar.image.repository | default .Values.image.repository }}:{{ .Values.testSidecar.image.tag | default (.Values.image.tag | default (printf "v%s" .Chart.AppVersion)) }}"
-          imagePullPolicy: {{ .Values.testSidecar.image.pullPolicy | default .Values.image.pullPolicy }}
+          image: "{{ $testImageRepo }}:{{ $testImageTag }}"
+          imagePullPolicy: {{ $testImagePullPolicy }}
           command: ["python", "mcp_base_test_server.py"]
           args:
             - "--no-auth"

@@ -353,7 +353,7 @@ echo "kubernetes" >> requirements.txt
 
 ```bash
 pip install -r requirements.txt
-python src/my_kubernetes_manager_server.py --port 4207
+python src/my_kubernetes_manager_server.py --port 4200
 ```
 
 ### Step 4: Deploy

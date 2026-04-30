@@ -1,38 +1,56 @@
 # Makefile for MCP Base Server
-# Builds and pushes container images
+# Builds and pushes container images.
+#
+# CANONICAL CONFIG: mcp-project.yaml at the repo root is the single source of
+# truth for ports, image names, registry, helm release, namespace. Regenerate
+# the make.env consumed below with:
+#
+#   python bin/sync-config.py
+#
+# Helm release values live at the repo root as $(HELM_VALUES_FILE) →
+# $(HELM_RELEASE).yaml (i.e. mcp-base.yaml here). That file is NOT generated
+# — edit it directly.
 
 # Default target
 .PHONY: all
 all: config build
 
-# Include auto-generated configuration from configure-make.py
+# Include auto-generated configuration from sync-config.py.
 -include make.env
 
-# Default values (overridden by make.env)
+# Default values (each is overridden by make.env once it exists). Keeping
+# them here means an unconfigured checkout still does *something* sensible.
 REGISTRY ?= ghcr.io/your-org
 IMAGE_NAME ?= mcp-base-server
-IMAGE_NAME_TEST ?= mcp-base-test-server
+TEST_IMAGE_NAME ?= mcp-base-test-server
+# Backward-compatible alias for the older variable name.
+IMAGE_NAME_TEST ?= $(TEST_IMAGE_NAME)
 TAG ?= latest
 PLATFORM ?= linux/amd64
 CONTAINER_TOOL ?= docker
 HELM_RELEASE ?= mcp-base
 HELM_NAMESPACE ?= default
+HELM_CHART_NAME ?= mcp-base
+HELM_SERVICE ?= $(if $(findstring $(HELM_CHART_NAME),$(HELM_RELEASE)),$(HELM_RELEASE),$(HELM_RELEASE)-$(HELM_CHART_NAME))
+HELM_VALUES_FILE ?= $(HELM_RELEASE).yaml
+MCP_PORT ?= 4200
+MCP_TEST_PORT ?= 4201
 
 # Derived values - construct full image names from REGISTRY and IMAGE_NAME
 IMAGE_FULL := $(REGISTRY)/$(IMAGE_NAME):$(TAG)
-IMAGE_FULL_TEST := $(REGISTRY)/$(IMAGE_NAME_TEST):$(TAG)
+IMAGE_FULL_TEST := $(REGISTRY)/$(TEST_IMAGE_NAME):$(TAG)
 
 #
 # Configuration targets
 #
 
 .PHONY: config
-config: make.env ## Generate make.env configuration file
+config: make.env ## Regenerate make.env from mcp-project.yaml
 
-make.env:
-	@echo "Generating make.env configuration..."
-	python3 bin/configure-make.py
-	@echo "Configuration generated. Edit make.env to customize settings."
+make.env: mcp-project.yaml
+	@echo "Regenerating make.env from mcp-project.yaml..."
+	python3 bin/sync-config.py
+	@echo "✓ make.env regenerated. Edit mcp-project.yaml (not make.env) and re-run 'make config' to update."
 
 .PHONY: config-show
 config-show: make.env ## Show current configuration
@@ -109,7 +127,7 @@ test-image-test: make.env ## Test test server image locally
 	@echo "Testing test server image: $(IMAGE_FULL_TEST)"
 	@echo "Starting test server container..."
 	@echo "Press Ctrl+C to stop"
-	$(CONTAINER_TOOL) run --rm -it -p 8001:8001 --name mcp-base-test-sidecar $(IMAGE_FULL_TEST)
+	$(CONTAINER_TOOL) run --rm -it -p $(MCP_TEST_PORT):$(MCP_TEST_PORT) --name mcp-base-test-sidecar $(IMAGE_FULL_TEST)
 
 #
 # Helm chart targets
@@ -126,15 +144,28 @@ helm-template: ## Render Helm chart templates
 	helm template $(HELM_RELEASE) chart/ --namespace $(HELM_NAMESPACE) --set image.repository=$(REGISTRY)/$(IMAGE_NAME) --set image.tag=$(TAG)
 
 .PHONY: helm-install
-helm-install: make.env ## Install Helm chart
-	@echo "Installing Helm chart: $(HELM_RELEASE)"
-	helm upgrade --install $(HELM_RELEASE) chart/ --namespace $(HELM_NAMESPACE) --create-namespace --set image.repository=$(REGISTRY)/$(IMAGE_NAME) --set image.tag=$(TAG) --wait
+# NOTE: --create-namespace is intentionally OMITTED. It assumes the
+# deploying identity has cluster-admin namespace-create rights. Pre-create
+# the namespace if needed. --wait is also OMITTED so a crashing sidecar
+# doesn't block helm and leave Kubernetes objects in an ambiguous state —
+# inspect readiness with `make k8s-pods` / `kubectl describe`.
+helm-install: make.env ## Install (or upgrade) Helm release with the release values overlay
+	@echo "Installing Helm chart: $(HELM_RELEASE) (namespace=$(HELM_NAMESPACE), values=$(HELM_VALUES_FILE))"
+	helm upgrade --install $(HELM_RELEASE) chart/ \
+		--namespace $(HELM_NAMESPACE) \
+		--set image.repository=$(REGISTRY)/$(IMAGE_NAME) \
+		--set image.tag=$(TAG) \
+		-f $(HELM_VALUES_FILE)
 	@echo "✓ Installed: $(HELM_RELEASE) in namespace $(HELM_NAMESPACE)"
 
 .PHONY: helm-upgrade
-helm-upgrade: make.env ## Upgrade Helm release
+helm-upgrade: make.env ## Upgrade existing Helm release with the release values overlay
 	@echo "Upgrading Helm release: $(HELM_RELEASE)"
-	helm upgrade $(HELM_RELEASE) chart/ --namespace $(HELM_NAMESPACE) --set image.repository=$(REGISTRY)/$(IMAGE_NAME) --set image.tag=$(TAG) --wait
+	helm upgrade $(HELM_RELEASE) chart/ \
+		--namespace $(HELM_NAMESPACE) \
+		--set image.repository=$(REGISTRY)/$(IMAGE_NAME) \
+		--set image.tag=$(TAG) \
+		-f $(HELM_VALUES_FILE)
 	@echo "✓ Upgraded: $(HELM_RELEASE)"
 
 .PHONY: helm-uninstall
@@ -172,23 +203,33 @@ dev-start-stdio: ## Start server in stdio mode (local development)
 .PHONY: dev-local
 dev-local: ## Start test server in no-auth mode (local development)
 	@echo "Starting test server in no-auth mode..."
-	@echo "URL: http://localhost:8001/test"
-	@echo "Health: http://localhost:8001/healthz"
+	@echo "URL: http://localhost:$(MCP_TEST_PORT)/test"
+	@echo "Health: http://localhost:$(MCP_TEST_PORT)/healthz"
 	@echo ""
-	python src/mcp_base_test_server.py --no-auth --port 8001
+	python src/mcp_base_test_server.py --no-auth --port $(MCP_TEST_PORT)
 
 .PHONY: dev-test
 dev-test: ## Run tests against local no-auth server
 	@echo "Running tests against local no-auth server..."
-	python test/test-mcp.py --url http://localhost:8001/test --no-auth --port-forward mcp-base
+	python test/test-mcp.py --url http://localhost:$(MCP_TEST_PORT)/test --no-auth --port-forward mcp-base
 
 .PHONY: dev-test-debug
 dev-test-debug: ## Run tests with debug logging against local no-auth server
 	@echo "Running tests with debug logging..."
-	python test/test-mcp.py --url http://localhost:8001/test --no-auth \
+	python test/test-mcp.py --url http://localhost:$(MCP_TEST_PORT)/test --no-auth \
 		--debug-log /tmp/mcp-debug.log
 	@echo ""
 	@echo "Debug log saved to: /tmp/mcp-debug.log"
+
+.PHONY: test-cluster
+test-cluster: ## Run MCP tests against the in-cluster test sidecar (auto kubectl port-forward)
+	@echo "Running MCP tests against in-cluster service $(HELM_SERVICE) in namespace $(HELM_NAMESPACE) on port $(MCP_TEST_PORT)..."
+	python test/test-mcp.py --no-auth --port-forward $(HELM_NAMESPACE)/$(HELM_SERVICE):$(MCP_TEST_PORT)
+
+.PHONY: test-cluster-prod
+test-cluster-prod: ## Run MCP tests against the in-cluster PRODUCTION endpoint (uses /tmp/user-token.txt)
+	@echo "Running MCP tests against in-cluster PRODUCTION service $(HELM_SERVICE) in namespace $(HELM_NAMESPACE) on port $(MCP_PORT)..."
+	python test/test-mcp.py --port-forward $(HELM_NAMESPACE)/$(HELM_SERVICE):$(MCP_PORT) --token-file /tmp/user-token.txt
 
 .PHONY: dev-coverage
 dev-coverage: ## Run the test suite under coverage and print a report
@@ -236,10 +277,10 @@ k8s-port-forward: ## Port forward to deployed service
 .PHONY: k8s-port-forward-test
 k8s-port-forward-test: ## Port forward to test server
 	@echo "Port forwarding to test server..."
-	@echo "Access at: http://localhost:8001"
-	@echo "Health: http://localhost:8001/healthz"
-	@echo "Test: http://localhost:8001/test"
-	kubectl port-forward -n $(HELM_NAMESPACE) svc/$(HELM_RELEASE)-mcp-base 8001:8001
+	@echo "Access at: http://localhost:$(MCP_TEST_PORT)"
+	@echo "Health: http://localhost:$(MCP_TEST_PORT)/healthz"
+	@echo "Test: http://localhost:$(MCP_TEST_PORT)/test"
+	kubectl port-forward -n $(HELM_NAMESPACE) svc/$(HELM_RELEASE)-mcp-base $(MCP_TEST_PORT):$(MCP_TEST_PORT)
 
 .PHONY: k8s-shell
 k8s-shell: ## Open shell in deployed pod

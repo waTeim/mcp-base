@@ -8,7 +8,7 @@ This server accepts Auth0 JWT tokens directly (no MCP token issuance).
 This is deployed as a sidecar container alongside the main FastMCP OAuth server,
 allowing both authentication methods to coexist:
 - Main server (port 8000): FastMCP OAuth proxy issuing MCP tokens
-- Test server (port 8001): Standard OIDC accepting Auth0 JWT tokens
+- Test server (port 4201): Standard OIDC accepting Auth0 JWT tokens
 
 Both servers share the same tool implementations from mcp_base_tools.py.
 """
@@ -198,8 +198,8 @@ def main():
     parser.add_argument(
         "--port",
         type=int,
-        default=int(os.getenv("TEST_PORT", "4209")),
-        help="Port to listen on (default: 4209)"
+        default=int(os.getenv("TEST_PORT", "4201")),
+        help="Port to listen on (default: 4201)"
     )
     parser.add_argument(
         "--host",

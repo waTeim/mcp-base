@@ -100,7 +100,7 @@ auth0:
 ```yaml
 service:
   type: ClusterIP
-  port: 4207
+  port: 4200
 
 ingress:
   enabled: false

@@ -27,8 +27,44 @@ import asyncio
 import importlib
 import inspect
 from pathlib import Path
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any, List, Tuple
 from datetime import datetime
+
+try:
+    import yaml  # PyYAML — listed in requirements.txt
+except ImportError:  # pragma: no cover
+    yaml = None  # falls back to hard-coded defaults below
+
+
+# ----------------------------------------------------------------------
+# Canonical project config — port defaults come from ./mcp-project.yaml.
+# ----------------------------------------------------------------------
+DEFAULT_PROJECT_CONFIG = Path("mcp-project.yaml")
+DEFAULT_MAIN_PORT = {{ port }}
+DEFAULT_TEST_PORT = {{ port + 1 }}
+
+
+def load_project_ports(config_path: Path) -> Tuple[int, int]:
+    """
+    Read `ports.main` and `ports.test` from mcp-project.yaml. Returns the
+    hard-coded defaults if the file is missing or PyYAML is unavailable.
+    Raises ValueError if the file exists but the values are out of range.
+    """
+    if yaml is None or not config_path.exists():
+        return DEFAULT_MAIN_PORT, DEFAULT_TEST_PORT
+
+    with config_path.open("r", encoding="utf-8") as f:
+        config = yaml.safe_load(f) or {}
+
+    ports = config.get("ports", {})
+    main_port = ports.get("main", DEFAULT_MAIN_PORT)
+    test_port = ports.get("test", DEFAULT_TEST_PORT)
+
+    for name, port in (("main", main_port), ("test", test_port)):
+        if not isinstance(port, int) or port < 1 or port > 65535:
+            raise ValueError(f"ports.{name} in {config_path} must be 1..65535")
+
+    return main_port, test_port
 
 
 class Colors:
@@ -748,8 +784,14 @@ Notes:
 
     parser.add_argument(
         '-u', '--url',
-        default=os.getenv('MCP_HTTP_URL', 'http://localhost:{{ port }}'),
-        help='HTTP URL (default: http://localhost:{{ port }} or $MCP_HTTP_URL)'
+        default=None,
+        help='HTTP URL. Defaults to http://localhost:<ports.main> from mcp-project.yaml.'
+    )
+    parser.add_argument(
+        '--project-config',
+        type=Path,
+        default=DEFAULT_PROJECT_CONFIG,
+        help='Project config file used for port defaults (default: mcp-project.yaml)'
     )
     parser.add_argument(
         '--token',
@@ -788,7 +830,7 @@ Notes:
     parser.add_argument(
         '--port-forward',
         action='store_true',
-        help='Use kubectl port-forward to access MCP server in cluster'
+        help='Spawn kubectl port-forward and run tests against the forwarded local port. Works in both automated and Inspector mode.'
     )
     parser.add_argument(
         '--namespace',
@@ -799,6 +841,18 @@ Notes:
         '--service',
         default='{{ chart_name }}-{{ chart_name }}',
         help='Kubernetes service name for port-forward'
+    )
+    parser.add_argument(
+        '--local-port',
+        type=int,
+        default=None,
+        help='Local port for kubectl port-forward. Defaults to ports.main from mcp-project.yaml (or ports.test when --no-auth is set).'
+    )
+    parser.add_argument(
+        '--remote-port',
+        type=int,
+        default=None,
+        help='Remote service port for kubectl port-forward. Defaults to ports.main from mcp-project.yaml (or ports.test when --no-auth is set).'
     )
     parser.add_argument(
         '-o', '--output',
@@ -815,7 +869,7 @@ Notes:
     parser.add_argument(
         '--no-auth',
         action='store_true',
-        help='Skip authentication (for testing against no-auth servers)'
+        help='Skip authentication and target the no-auth /test endpoint (production endpoint stays /mcp).'
     )
     parser.add_argument(
         '--debug-log',
@@ -825,19 +879,76 @@ Notes:
 
     args = parser.parse_args()
 
+    # Resolve port defaults from mcp-project.yaml unless overridden.
+    main_port, test_port = load_project_ports(args.project_config)
+    if args.url is None:
+        args.url = (
+            f"http://localhost:{test_port}" if args.no_auth
+            else f"http://localhost:{main_port}"
+        )
+    forwarded_port = test_port if args.no_auth else main_port
+    if args.local_port is None:
+        args.local_port = forwarded_port
+    if args.remote_port is None:
+        args.remote_port = forwarded_port
+
     if not args.use_inspector:
-        exit_code = asyncio.run(run_automated_tests(
-            transport='http',
-            url=args.url,
-            token=args.token,
-            token_file=args.token_file,
-            oidc_config_path=args.oidc_config,
-            output_file=args.output_file,
-            output_format=args.output_format,
-            no_auth=args.no_auth,
-            debug_log=args.debug_log
-        ))
-        sys.exit(exit_code)
+        port_forward_proc = None
+        try:
+            test_url = args.url
+            if args.port_forward:
+                print(Colors.blue("Mode: kubectl port-forward"))
+                print(f"{Colors.blue('Namespace:')} {args.namespace}")
+                print(f"{Colors.blue('Service:')} {args.service}")
+                print(f"{Colors.blue('Forward:')} localhost:{args.local_port} -> {args.service}:{args.remote_port}")
+                print()
+
+                port_forward_proc = subprocess.Popen(
+                    [
+                        'kubectl', 'port-forward',
+                        '-n', args.namespace,
+                        f'svc/{args.service}',
+                        f'{args.local_port}:{args.remote_port}',
+                    ],
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                )
+                # Tiny grace period for kubectl to bind locally before
+                # the MCP client attempts the connect.
+                time.sleep(2)
+                if port_forward_proc.poll() is not None:
+                    stderr = port_forward_proc.stderr.read().decode(errors='replace')
+                    print(Colors.red(f"❌ kubectl port-forward exited with code {port_forward_proc.returncode}"))
+                    if stderr:
+                        print(stderr.strip())
+                    sys.exit(1)
+
+                # Override the URL the runner connects to. /test for the
+                # no-auth sidecar, /mcp for the production endpoint.
+                if args.no_auth:
+                    test_url = f"http://localhost:{args.local_port}/test"
+                else:
+                    test_url = f"http://localhost:{args.local_port}/mcp"
+
+            exit_code = asyncio.run(run_automated_tests(
+                transport='http',
+                url=test_url,
+                token=args.token,
+                token_file=args.token_file,
+                oidc_config_path=args.oidc_config,
+                output_file=args.output_file,
+                output_format=args.output_format,
+                no_auth=args.no_auth,
+                debug_log=args.debug_log
+            ))
+            sys.exit(exit_code)
+        finally:
+            if port_forward_proc is not None and port_forward_proc.poll() is None:
+                port_forward_proc.terminate()
+                try:
+                    port_forward_proc.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    port_forward_proc.kill()
 
     # Inspector mode
     if not check_npx():

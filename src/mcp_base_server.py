@@ -114,24 +114,81 @@ INTENDED AGENT WORKFLOW
    If any fail → STOP, write SCAFFOLD_RETRIEVAL_FAILURE.md, do not customize.
 4. Inspect only files with customization_relevance in {"high","medium"};
    use read_scaffold_artifact_metadata for symbols/notes first.
-5. Customize src/<server>_tools.py — add @mcp.tool / @mcp.resource /
+5. **Edit `mcp-project.yaml` first.** It is the canonical source of truth
+   for: project name, chart name, ports.main / ports.test, build
+   registry/imageName/testImageName/tag/platform/containerTool, and
+   deployment helmRelease/namespace/serviceType/testSidecarEnabled.
+   Every other build/deployment artifact (Makefile vars, image tags,
+   helm release name, port arguments) ultimately derives from this file.
+6. Run `python bin/sync-config.py` to regenerate `make.env` from the
+   project config. Re-run after any subsequent edits to `mcp-project.yaml`.
+7. Edit the release values overlay at the repo root,
+   `<helmRelease>.yaml` (e.g. `my-server.yaml`). This is a deployment
+   artifact — chart defaults live in `chart/values.yaml`; per-release
+   overrides (image.repository, ingress host, OIDC issuer/audience, etc.)
+   live in this file. The Makefile passes it via `helm -f`.
+8. Customize src/<server>_tools.py — add @mcp.tool / @mcp.resource /
    @mcp.prompt implementations.
-6. **Write tests for every tool you add.** This is not optional. The
+9. **Write tests for every tool you add.** This is not optional. The
    scaffold ships test/plugins/test_example.py as a richly-commented
    starter; copy it to test/plugins/test_<your_tool>.py per new tool,
    and assert BOTH a happy path AND at least one error path. See
    pattern://testing for the contract and worked examples. Run
    `make dev-coverage` and confirm the lines you added show up as
    covered before declaring the tool done.
-7. chmod +x bin/*; python bin/configure-make.py;
-   make build && make push && make helm-install.
-8. `make test-cluster` to exercise the deployed test sidecar
-   (auto-managed kubectl port-forward, no auth setup required).
+10. chmod +x bin/*; make build && make push && make helm-install.
+    NOTE: `helm-install` does NOT pass `--create-namespace` (assumes
+    cluster-admin) or `--wait` (blocks on crashing sidecars). Pre-create
+    the namespace if needed and check readiness with `make k8s-pods`.
+11. `make test-cluster` exercises the in-cluster test sidecar
+    (auto-managed kubectl port-forward, no auth setup needed). Use
+    `make test-cluster-prod --token-file=/tmp/user-token.txt` against
+    the production endpoint.
 
 For tool-only proxy clients (resources not forwarded by the proxy):
 - Still call list_scaffold_artifact_metadata for coordination.
 - Fall back to read_scaffold_artifact for byte transfer (accepts the
   context-bloat cost). The hash-verification gate is unchanged.
+
+========================================================================
+CANONICAL PROJECT CONFIG (mcp-project.yaml)
+========================================================================
+
+The scaffold ships `mcp-project.yaml` at the repo root as the single
+source of truth for build + deployment defaults:
+
+  project:    name, chartName
+  ports:      main (default 4200), test (default 4201)
+  build:      registry, imageName, testImageName, tag, platform,
+              containerTool
+  deployment: helmRelease, namespace, serviceType, testSidecarEnabled
+
+Downstream artifacts are derived from this file:
+
+  bin/sync-config.py   reads mcp-project.yaml → writes make.env
+  Makefile             includes make.env (REGISTRY, IMAGE_NAME, TAG,
+                       HELM_RELEASE, HELM_NAMESPACE, HELM_SERVICE,
+                       HELM_VALUES_FILE, MCP_PORT, MCP_TEST_PORT)
+  test/test-mcp.py     reads ports.main / ports.test for --url and
+                       --local-port / --remote-port defaults
+  Dockerfile           copies mcp-project.yaml into /app for runtime
+                       port reads
+  chart/values.yaml    chart defaults (matches ports.* by default)
+  <helmRelease>.yaml   release values overlay at repo root, NOT under
+                       chart/. Treated as a deployment artifact and
+                       passed to helm via -f $(HELM_VALUES_FILE).
+
+Workflow:
+  - Editing the project config means re-running sync-config.py.
+  - Never edit make.env by hand — regenerate it.
+  - The Makefile defaults still work without sync-config.py for the
+    initial scaffold, but stay aligned with mcp-project.yaml.
+
+The chart's testSidecar.image.repository defaults to "" — the chart
+template derives a test image name by replacing the trailing
+"-server" with "-test-server" against image.repository. The
+sidecar MUST run the test image (the production image deliberately
+does not contain the test_server.py entrypoint).
 
 ========================================================================
 TESTING (REQUIRED, NOT OPTIONAL)
@@ -290,7 +347,7 @@ def _split_www_authenticate(header: str) -> list:
 # Server Entry Point
 # ============================================================================
 
-def run_http_transport(port: int = 4208, host: str = "0.0.0.0"):
+def run_http_transport(port: int = 4200, host: str = "0.0.0.0"):
     """Run the MCP server with HTTP transport."""
     import uvicorn
     from starlette.routing import Route
@@ -463,13 +520,13 @@ def main():
         epilog="""
 Examples:
   # Run HTTP server (default)
-  python mcp_base_server.py --port 4208
+  python mcp_base_server.py --port 4200
 
   # Run with custom host
   python mcp_base_server.py --host 127.0.0.1 --port 3000
 
 Environment Variables:
-  PORT        Default HTTP port (default: 4208)
+  PORT        Default HTTP port (default: 4200)
   HOST        Default host binding (default: 0.0.0.0)
         """
     )
@@ -477,8 +534,8 @@ Environment Variables:
     parser.add_argument(
         "--port",
         type=int,
-        default=int(os.environ.get("PORT", 4208)),
-        help="HTTP server port (default: 4208)"
+        default=int(os.environ.get("PORT", 4200)),
+        help="HTTP server port (default: 4200)"
     )
     parser.add_argument(
         "--host",

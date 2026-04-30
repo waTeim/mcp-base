@@ -38,9 +38,9 @@ securityContext: {}
 
 service:
   type: ClusterIP
-  port: 4208
+  port: 4200
   # Test sidecar port (only used when testSidecar.enabled = true)
-  testPort: 4209
+  testPort: 4201
 
 ingress:
   enabled: false
@@ -149,13 +149,15 @@ testSidecar:
   # Enable test sidecar container
   enabled: false
 
-  # Image for test sidecar (defaults to main image; the test image built by
-  # `make build-test` is FROM the main image and only overrides the CMD, so
-  # leaving these empty + relying on `command`/`args` works fine).
+  # Image for the test sidecar. The default (empty repository) makes the
+  # deployment template auto-derive a test image from image.repository by
+  # replacing the trailing "-server" suffix with "-test-server". Override
+  # repository explicitly if your registry uses a different naming
+  # convention.
   image:
-    repository: ""  # Leave empty to use main image
-    tag: ""         # Leave empty to use main image tag
-    pullPolicy: ""  # Leave empty to use main image pullPolicy
+    repository: ""  # empty → derive from image.repository (s/-server$/-test-server/)
+    tag: ""         # empty → use image.tag
+    pullPolicy: ""  # empty → use image.pullPolicy
 
   # Mock identity injected by NoAuthMiddleware. Becomes both the `sub` and
   # `preferred_username` claims; the issuer is fixed at http://localhost/no-auth.

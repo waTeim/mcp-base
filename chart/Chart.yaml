@@ -6,10 +6,10 @@ description: MCP Base - A foundation for building Model Context Protocol servers
 type: application
 
 # Chart version - increment with each change
-version: 1.2.0
+version: 1.3.0
 
 # Application version
-appVersion: "1.2.0"
+appVersion: "1.3.0"
 
 # Keywords for search
 keywords:

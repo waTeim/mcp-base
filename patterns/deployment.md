@@ -45,13 +45,13 @@ USER appuser
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-    CMD curl -f http://localhost:4207/health || exit 1
+    CMD curl -f http://localhost:4200/health || exit 1
 
 # Expose port
-EXPOSE 4207
+EXPOSE 4200
 
 # Run server
-CMD ["python", "src/server.py", "--transport", "http", "--port", "4207"]
+CMD ["python", "src/server.py", "--transport", "http", "--port", "4200"]
 ```
 
 ### Multi-stage Build (for smaller images)
@@ -77,8 +77,8 @@ COPY --from=builder /build/deps /usr/local/lib/python3.11/site-packages/
 COPY src/ ./src/
 
 USER appuser
-EXPOSE 4207
-CMD ["python", "src/server.py", "--transport", "http", "--port", "4207"]
+EXPOSE 4200
+CMD ["python", "src/server.py", "--transport", "http", "--port", "4200"]
 ```
 
 ## Build Automation (Makefile)
@@ -117,13 +117,14 @@ helm-lint:
 	helm lint chart/
 
 .PHONY: helm-install
+# NOTE: `--create-namespace` and `--wait` are intentionally OMITTED.
+# `--create-namespace` requires cluster-admin namespace-create rights;
+# pre-create the namespace if needed. `--wait` blocks on a crashing
+# sidecar — let helm return and inspect with `kubectl describe`.
 helm-install:
 	helm upgrade --install $(HELM_RELEASE) chart/ \
 		--namespace $(HELM_NAMESPACE) \
-		--create-namespace \
-		--set image.repository=$(REGISTRY)/$(IMAGE_NAME) \
-		--set image.tag=$(TAG) \
-		--wait
+		-f $(HELM_VALUES_FILE)
 
 .PHONY: helm-uninstall
 helm-uninstall:
@@ -288,7 +289,7 @@ spec:
     metadata:
       annotations:
         prometheus.io/scrape: "true"
-        prometheus.io/port: "4207"
+        prometheus.io/port: "4200"
         prometheus.io/path: "/metrics"
 ```
 
@@ -321,7 +322,7 @@ kubectl logs -n mcp -l app.kubernetes.io/name=mcp-server --tail=100 -f
 ### Port Forward for Local Testing
 
 ```bash
-kubectl port-forward -n mcp svc/mcp-server 4207:4207
+kubectl port-forward -n mcp svc/mcp-server 4200:4200
 ```
 
 ### Scale Manually

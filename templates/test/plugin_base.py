@@ -46,7 +46,7 @@ class TestContext:
 
     Attributes:
         base_url: The MCP endpoint URL the runner connected to
-            (e.g. "http://127.0.0.1:8001/test"). Strip the path suffix
+            (e.g. "http://127.0.0.1:4201/test"). Strip the path suffix
             for non-MCP endpoints like /healthz / /readyz.
         shared: Mutable dict for plugins to publish data for downstream
             plugins (e.g. a created resource ID, an obtained token, a

@@ -19,7 +19,7 @@ Every generated MCP server includes two entry points serving different purposes:
 │                                                              │
 │  ┌─────────────────────┐    ┌─────────────────────┐        │
 │  │   Main Server       │    │   Test Server       │        │
-│  │   (port 4207)       │    │   (port 8001)       │        │
+│  │   (port 4200)       │    │   (port 4201)       │        │
 │  │                     │    │                     │        │
 │  │  FastMCP OAuth      │    │  Direct OIDC        │        │
 │  │  Issues MCP tokens  │    │  Auth0 JWT tokens   │        │
@@ -158,13 +158,13 @@ For rapid development, debugging, and CI/CD pipelines, the test server supports 
 **Starting no-auth mode:**
 ```bash
 # Start test server without authentication
-python my_mcp_test_server.py --no-auth --port 8001
+python my_mcp_test_server.py --no-auth --port 4201
 
 # Custom identity for user-specific testing
-python my_mcp_test_server.py --no-auth --identity "dev-user" --port 8001
+python my_mcp_test_server.py --no-auth --identity "dev-user" --port 4201
 
 # Run tests without authentication
-./test/test-mcp.py --url http://localhost:8001/test --no-auth
+./test/test-mcp.py --url http://localhost:4201/test --no-auth
 ```
 
 **Mock claims provided:**
@@ -558,8 +558,8 @@ expected_markers = ["# FastMCP Tools"]  # ❌
 
 **Development workflow:**
 ```bash
-# Server: python my_test_server.py --no-auth --port 8001
-# Tests:  ./test/test-mcp.py --url http://localhost:8001/test --no-auth
+# Server: python my_test_server.py --no-auth --port 4201
+# Tests:  ./test/test-mcp.py --url http://localhost:4201/test --no-auth
 ```
 
 ### 4. Resource Registration Scope
