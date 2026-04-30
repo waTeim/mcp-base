@@ -3,9 +3,7 @@
 #
 # CANONICAL CONFIG: mcp-project.yaml at the repo root is the single source of
 # truth for ports, image names, registry, helm release, namespace, etc.
-# Regenerate the make.env consumed below with:
-#
-#   python bin/sync-config.py
+# make.env is regenerated automatically when mcp-project.yaml changes.
 #
 # Helm release values are a deployment artifact at the repo root, named
 # after the helm release (default: $(HELM_VALUES_FILE) → $(HELM_RELEASE).yaml).
@@ -15,8 +13,7 @@
 .PHONY: all
 all: build
 
-# Include configuration generated from mcp-project.yaml. Re-run
-# `python bin/sync-config.py` after editing the project config.
+# Include configuration generated from mcp-project.yaml.
 -include make.env
 
 # Default values (each is overridden by make.env once it exists). Keeping
@@ -46,6 +43,18 @@ IMAGE_FULL := $(REGISTRY)/$(IMAGE_NAME):$(TAG)
 TEST_IMAGE_FULL := $(REGISTRY)/$(TEST_IMAGE_NAME):$(TAG)
 
 #
+# Configuration targets
+#
+
+.PHONY: config
+config: ## Regenerate make.env from mcp-project.yaml
+	python bin/sync-config.py
+
+make.env: mcp-project.yaml bin/sync-config.py
+	@echo "Regenerating make.env from mcp-project.yaml..."
+	python bin/sync-config.py
+
+#
 # Container build targets
 #
 
@@ -56,7 +65,7 @@ build: ## Build container image
 	@echo "✓ Built: $(IMAGE_FULL)"
 
 .PHONY: build-no-cache
-build-no-cache: ## Build container image without cache
+build-no-cache:
 	@echo "Building container image (no cache): $(IMAGE_FULL)"
 	$(CONTAINER_TOOL) build \
 		--no-cache \
@@ -91,7 +100,7 @@ build-test: build ## Build test container image (FROM main image)
 	@echo "✓ Built: $(TEST_IMAGE_FULL)"
 
 .PHONY: build-test-no-cache
-build-test-no-cache: build-no-cache ## Build test container image without cache (FROM main image)
+build-test-no-cache: build-no-cache
 	@echo "Building test container image (no cache): $(TEST_IMAGE_FULL) (FROM $(IMAGE_FULL))"
 	$(CONTAINER_TOOL) build \
 		--no-cache \
@@ -188,9 +197,8 @@ dev-run-test: ## Run test server locally (no auth) on $(MCP_TEST_PORT)
 	python src/{{ server_name_snake }}_test_server.py --no-auth --port $(MCP_TEST_PORT)
 
 .PHONY: test
-test: ## Run MCP tests against local test server
-	@echo "Running MCP tests against http://localhost:$(MCP_TEST_PORT)/test..."
-	python test/test-mcp.py --url http://localhost:$(MCP_TEST_PORT)/test --no-auth
+test: ## Start local test server, run MCP tests, then stop it
+	python test/run-local-tests.py --port $(MCP_TEST_PORT)
 
 .PHONY: test-cluster
 test-cluster: ## Run MCP tests against the in-cluster test sidecar (auto kubectl port-forward)
@@ -202,17 +210,6 @@ test-cluster: ## Run MCP tests against the in-cluster test sidecar (auto kubectl
 		--service $(HELM_SERVICE) \
 		--local-port $(MCP_TEST_PORT) \
 		--remote-port $(MCP_TEST_PORT)
-
-.PHONY: test-cluster-prod
-test-cluster-prod: ## Run MCP tests against the in-cluster PRODUCTION endpoint (auth-required, --token-file=/tmp/user-token.txt)
-	@echo "Running MCP tests against in-cluster PRODUCTION service $(HELM_SERVICE):$(MCP_PORT)/mcp..."
-	python test/test-mcp.py \
-		--port-forward \
-		--namespace $(HELM_NAMESPACE) \
-		--service $(HELM_SERVICE) \
-		--local-port $(MCP_PORT) \
-		--remote-port $(MCP_PORT) \
-		--token-file /tmp/user-token.txt
 
 .PHONY: dev-deps
 dev-deps: ## Install test-only dependencies (coverage, httpx)
@@ -258,7 +255,9 @@ k8s-port-forward-test: ## Port-forward to test sidecar on $(MCP_TEST_PORT) (no-a
 .PHONY: clean
 clean: ## Clean generated files
 	@echo "Cleaning generated files..."
-	rm -f make.env
+	rm -f make.env .coverage .coverage.*
+	rm -rf coverage-html
+	find . -type d -name __pycache__ -prune -exec rm -rf {} +
 	@echo "✓ Cleaned"
 
 .PHONY: help
@@ -267,17 +266,48 @@ help: ## Show this help message
 	@echo ""
 	@echo "Usage: make [target]"
 	@echo ""
-	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-20s\033[0m %s\n", $$1, $$2}'
+	@echo "Testing:"
+	@echo "  make test               # Start local test server, run MCP tests, then stop it"
+	@echo "  make dev-run-test       # Run test server manually for debugging"
+	@echo "  make dev-coverage       # Run tests with coverage report"
+	@echo "  make dev-coverage-html  # Run tests and write coverage-html/index.html"
+	@echo "  make test-cluster       # Run tests against the in-cluster test sidecar"
+	@echo ""
+	@echo "Development:"
+	@echo "  make dev-run            # Run production server locally"
+	@echo "  make dev-deps           # Install test-only dependencies"
+	@echo ""
+	@echo "Container Build:"
+	@echo "  make build              # Build production container image"
+	@echo "  make build-test         # Build test container image"
+	@echo "  make build-all          # Build both images"
+	@echo "  make push               # Push production image"
+	@echo "  make push-test          # Push test image"
+	@echo "  make push-all           # Push both images"
+	@echo ""
+	@echo "Helm Chart:"
+	@echo "  make helm-lint          # Lint Helm chart"
+	@echo "  make helm-template      # Render chart templates"
+	@echo "  make helm-deps          # Update chart dependencies"
+	@echo "  make helm-install       # Install or upgrade release"
+	@echo "  make helm-upgrade       # Upgrade existing release"
+	@echo "  make helm-uninstall     # Uninstall release"
+	@echo "  make helm-status        # Show release status"
+	@echo ""
+	@echo "Configuration:"
+	@echo "  make config             # Regenerate make.env from mcp-project.yaml"
 	@echo ""
 	@echo "Quick Start:"
-	@echo "  1. make build           # Build production container image"
-	@echo "  2. make push            # Push to registry"
-	@echo "  3. make helm-deps       # Update chart dependencies"
-	@echo "  4. make helm-install    # Deploy to Kubernetes"
+	@echo "  1. make test            # Run local no-auth test lifecycle"
+	@echo "  2. make build           # Build production container image"
+	@echo "  3. make push            # Push to registry"
+	@echo "  4. make helm-deps       # Update chart dependencies"
+	@echo "  5. make helm-install    # Deploy to Kubernetes"
 	@echo ""
-	@echo "Testing:"
-	@echo "  make dev-run-test       # Run test server locally (no auth)"
-	@echo "  make test               # Run MCP tests"
-	@echo "  make build-test         # Build test container image"
-	@echo "  make build-push-test    # Build and push test container"
-	@echo "  make build-push-all     # Build and push both images"
+	@echo "Advanced:"
+	@echo "  make build-no-cache      # Rebuild production image without cache"
+	@echo "  make build-test-no-cache # Rebuild test image without cache"
+	@echo "  make k8s-logs            # Stream deployed pod logs"
+	@echo "  make k8s-pods            # Show deployed pods"
+	@echo "  make k8s-port-forward    # Port-forward to production endpoint"
+	@echo "  make k8s-port-forward-test # Port-forward to no-auth test endpoint"

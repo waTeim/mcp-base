@@ -104,7 +104,7 @@ def main() -> int:
         "--port", str(port),
     ]
 
-    print(f"⏩ Starting test server under coverage on 127.0.0.1:{port}")
+    print(f"⏩ Starting test server under coverage on 127.0.0.1:{port}", flush=True)
     server = subprocess.Popen(server_cmd, env=env, cwd=REPO_ROOT)
 
     test_exit = 1
@@ -115,7 +115,7 @@ def main() -> int:
             print(f"error: {e}", file=sys.stderr)
             return 3
 
-        print(f"✅ Server ready; running {TEST_RUNNER.name} against /test")
+        print(f"✅ Server ready; running {TEST_RUNNER.name} against /test", flush=True)
         test_exit = subprocess.call(
             [sys.executable, str(TEST_RUNNER),
              "--url", f"http://127.0.0.1:{port}/test",
@@ -137,20 +137,20 @@ def main() -> int:
                 server.kill()
                 server.wait()
 
-    print()
-    print("⏩ Combining parallel coverage data...")
+    print(flush=True)
+    print("⏩ Combining parallel coverage data...", flush=True)
     if _coverage_cli("combine") != 0:
         print("error: `coverage combine` failed", file=sys.stderr)
         return 4
 
-    print()
-    print("=" * 70)
-    print("Coverage report (src/)")
-    print("=" * 70)
+    print(flush=True)
+    print("=" * 70, flush=True)
+    print("Coverage report (src/)", flush=True)
+    print("=" * 70, flush=True)
     rc_report = _coverage_cli("report")
     if args.html:
-        print()
-        print("⏩ Writing HTML report...")
+        print(flush=True)
+        print("⏩ Writing HTML report...", flush=True)
         _coverage_cli("html")
         print("   coverage-html/index.html")
 

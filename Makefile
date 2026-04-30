@@ -2,10 +2,8 @@
 # Builds and pushes container images.
 #
 # CANONICAL CONFIG: mcp-project.yaml at the repo root is the single source of
-# truth for ports, image names, registry, helm release, namespace. Regenerate
-# the make.env consumed below with:
-#
-#   python bin/sync-config.py
+# truth for ports, image names, registry, helm release, namespace. make.env is
+# regenerated automatically when mcp-project.yaml changes.
 #
 # Helm release values live at the repo root as $(HELM_VALUES_FILE) →
 # $(HELM_RELEASE).yaml (i.e. mcp-base.yaml here). That file is NOT generated
@@ -45,12 +43,13 @@ IMAGE_FULL_TEST := $(REGISTRY)/$(TEST_IMAGE_NAME):$(TAG)
 #
 
 .PHONY: config
-config: make.env ## Regenerate make.env from mcp-project.yaml
+config: ## Regenerate make.env from mcp-project.yaml
+	python3 bin/sync-config.py
 
-make.env: mcp-project.yaml
+make.env: mcp-project.yaml bin/sync-config.py
 	@echo "Regenerating make.env from mcp-project.yaml..."
 	python3 bin/sync-config.py
-	@echo "✓ make.env regenerated. Edit mcp-project.yaml (not make.env) and re-run 'make config' to update."
+	@echo "✓ make.env regenerated from mcp-project.yaml."
 
 .PHONY: config-show
 config-show: make.env ## Show current configuration
@@ -77,7 +76,7 @@ build: make.env ## Build container image
 	@echo "✓ Built: $(IMAGE_FULL)"
 
 .PHONY: build-no-cache
-build-no-cache: make.env ## Build container image without cache
+build-no-cache: make.env
 	@echo "Building container image (no cache): $(IMAGE_FULL)"
 	$(CONTAINER_TOOL) build --no-cache --tag $(IMAGE_FULL) --platform $(PLATFORM) --file Dockerfile .
 	@echo "✓ Built: $(IMAGE_FULL)"
@@ -98,7 +97,7 @@ build-test: build ## Build test server container image (FROM main image)
 	@echo "✓ Built: $(IMAGE_FULL_TEST)"
 
 .PHONY: build-test-no-cache
-build-test-no-cache: build-no-cache ## Build test server image without cache (FROM main image)
+build-test-no-cache: build-no-cache
 	@echo "Building test server image (no cache): $(IMAGE_FULL_TEST) (FROM $(IMAGE_FULL))"
 	$(CONTAINER_TOOL) build --no-cache --tag $(IMAGE_FULL_TEST) --platform $(PLATFORM) --build-arg BASE_IMAGE=$(IMAGE_FULL) --file test/Dockerfile .
 	@echo "✓ Built: $(IMAGE_FULL_TEST)"
@@ -208,10 +207,15 @@ dev-local: ## Start test server in no-auth mode (local development)
 	@echo ""
 	python src/mcp_base_test_server.py --no-auth --port $(MCP_TEST_PORT)
 
+.PHONY: dev-run-test
+dev-run-test: dev-local ## Run test server manually for debugging
+
+.PHONY: test
+test: ## Start local test server, run MCP tests, then stop it
+	python test/run-local-tests.py --port $(MCP_TEST_PORT)
+
 .PHONY: dev-test
-dev-test: ## Run tests against local no-auth server
-	@echo "Running tests against local no-auth server..."
-	python test/test-mcp.py --url http://localhost:$(MCP_TEST_PORT)/test --no-auth --port-forward mcp-base
+dev-test: test ## Alias for test
 
 .PHONY: dev-test-debug
 dev-test-debug: ## Run tests with debug logging against local no-auth server
@@ -225,11 +229,6 @@ dev-test-debug: ## Run tests with debug logging against local no-auth server
 test-cluster: ## Run MCP tests against the in-cluster test sidecar (auto kubectl port-forward)
 	@echo "Running MCP tests against in-cluster service $(HELM_SERVICE) in namespace $(HELM_NAMESPACE) on port $(MCP_TEST_PORT)..."
 	python test/test-mcp.py --no-auth --port-forward $(HELM_NAMESPACE)/$(HELM_SERVICE):$(MCP_TEST_PORT)
-
-.PHONY: test-cluster-prod
-test-cluster-prod: ## Run MCP tests against the in-cluster PRODUCTION endpoint (uses /tmp/user-token.txt)
-	@echo "Running MCP tests against in-cluster PRODUCTION service $(HELM_SERVICE) in namespace $(HELM_NAMESPACE) on port $(MCP_PORT)..."
-	python test/test-mcp.py --port-forward $(HELM_NAMESPACE)/$(HELM_SERVICE):$(MCP_PORT) --token-file /tmp/user-token.txt
 
 .PHONY: dev-coverage
 dev-coverage: ## Run the test suite under coverage and print a report
@@ -295,7 +294,9 @@ k8s-shell: ## Open shell in deployed pod
 .PHONY: clean
 clean: ## Clean generated files
 	@echo "Cleaning generated files..."
-	rm -f make.env
+	rm -f make.env .coverage .coverage.*
+	rm -rf coverage-html
+	find . -type d -name __pycache__ -prune -exec rm -rf {} +
 	@echo "✓ Cleaned"
 
 .PHONY: help
@@ -304,10 +305,15 @@ help: ## Show this help message
 	@echo ""
 	@echo "Usage: make [target]"
 	@echo ""
-	@echo "Development (Local No-Auth):"
-	@echo "  dev-local            Start test server in no-auth mode"
-	@echo "  dev-test             Run tests against local no-auth server"
-	@echo "  dev-test-debug       Run tests with debug logging"
+	@echo "Testing:"
+	@echo "  test                 Start local test server, run MCP tests, then stop it"
+	@echo "  dev-run-test         Run test server manually for debugging"
+	@echo "  dev-coverage         Run tests with coverage report"
+	@echo "  dev-coverage-html    Run tests and write coverage-html/index.html"
+	@echo "  test-cluster         Run tests against the in-cluster test sidecar"
+	@echo ""
+	@echo "Development:"
+	@echo "  dev-test-debug       Run tests with debug logging against a manual server"
 	@echo "  dev-start-http       Start server in HTTP mode"
 	@echo "  dev-start-stdio      Start server in stdio mode"
 	@echo ""
@@ -325,19 +331,22 @@ help: ## Show this help message
 	@echo "  helm-upgrade         Upgrade release"
 	@echo "  helm-uninstall       Uninstall release"
 	@echo ""
-	@echo "Kubernetes:"
+	@echo "Kubernetes / Debugging:"
 	@echo "  k8s-logs             Show logs from deployed pods"
 	@echo "  k8s-pods             Show deployed pods"
 	@echo "  k8s-port-forward     Port forward to service"
 	@echo "  k8s-shell            Open shell in pod"
 	@echo ""
 	@echo "Quick Start:"
-	@echo "  1. make dev-local       # Start no-auth server"
-	@echo "  2. make dev-test        # Run tests"
+	@echo "  1. make test            # Run local no-auth test lifecycle"
 	@echo ""
 	@echo "Production:"
 	@echo "  1. make config          # Generate configuration"
-	@echo "  2. Edit make.env        # Customize settings"
+	@echo "  2. Edit mcp-project.yaml # Customize project settings"
 	@echo "  3. make build-all       # Build both images"
 	@echo "  4. make push-all        # Push to registry"
 	@echo "  5. make helm-install    # Deploy to Kubernetes"
+	@echo ""
+	@echo "Advanced:"
+	@echo "  build-no-cache      Rebuild production image without cache"
+	@echo "  build-test-no-cache Rebuild test image without cache"

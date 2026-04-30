@@ -147,7 +147,6 @@ Edit the canonical project config first. The defaults baked into
 
 ```bash
 $EDITOR mcp-project.yaml          # set registry, image names, namespace, ports
-python bin/sync-config.py         # regenerate make.env
 $EDITOR <helmRelease>.yaml        # release values overlay (image.repository,
                                    # ingress, OIDC issuer/audience, ...)
 ```
@@ -167,8 +166,8 @@ least one error path. Run:
 
 ```bash
 make dev-deps        # one-time: pip install -r test/requirements.txt
-make dev-run-test    # in one terminal — local no-auth test server
-make test            # in another — runs the plugin suite
+make test            # starts the no-auth server, runs the plugin suite, stops it
+make dev-run-test    # optional: manual no-auth test server for debugging
 make dev-coverage    # full pipeline under coverage.py with line/branch report
 ```
 
@@ -195,13 +194,12 @@ hides them). Pre-create the namespace if needed; check with `make k8s-pods`.
 
 ```bash
 make test-cluster        # auto kubectl port-forward → /test on the no-auth sidecar
-make test-cluster-prod   # auto port-forward → /mcp on the auth-enforcing endpoint
-                         # (uses /tmp/user-token.txt)
 ```
 
-Both targets pass named arguments (`--namespace`, `--service`, `--local-port`,
-`--remote-port`) derived from `make.env`. The runner picks `/test` for
-`--no-auth` and `/mcp` otherwise from the same flag set.
+The target port-forwards to the no-auth test sidecar using values derived
+from `mcp-project.yaml` through `make.env`. To test an authenticated endpoint,
+run `test/test-mcp.py` manually with `--token-file` and an explicit URL or
+port-forward.
 
 ---
 

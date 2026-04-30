@@ -1,9 +1,10 @@
 # Canonical project configuration for {{ server_name }} MCP Server.
 #
 # This file is the SINGLE SOURCE OF TRUTH for build and deployment defaults.
-# Local Make config (`make.env`) is regenerated from here:
+# Local Make config (`make.env`) is regenerated from here automatically when
+# Make sees this file change. You can also refresh it manually with:
 #
-#   python bin/sync-config.py
+#   make config
 #
 # Helm release values are deployment artifacts and live at the repository root
 # as `<deployment.helmRelease>.yaml` (e.g. `{{ chart_name }}.yaml`). They are

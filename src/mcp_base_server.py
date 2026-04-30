@@ -141,9 +141,9 @@ INTENDED AGENT WORKFLOW
     cluster-admin) or `--wait` (blocks on crashing sidecars). Pre-create
     the namespace if needed and check readiness with `make k8s-pods`.
 11. `make test-cluster` exercises the in-cluster test sidecar
-    (auto-managed kubectl port-forward, no auth setup needed). Use
-    `make test-cluster-prod --token-file=/tmp/user-token.txt` against
-    the production endpoint.
+    (auto-managed kubectl port-forward, no auth setup needed). To test
+    an authenticated endpoint, run test/test-mcp.py manually with a
+    valid token file and explicit URL or port-forward.
 
 For tool-only proxy clients (resources not forwarded by the proxy):
 - Still call list_scaffold_artifact_metadata for coordination.

@@ -393,7 +393,7 @@ _ROLE_RULES = [
             "resource UID) for downstream plugins to reuse.",
         ],
         "verification_notes": [
-            "make dev-test          # runs against the in-cluster sidecar via port-forward",
+            "make test              # starts the local no-auth server, runs tests, then stops it",
             "make dev-coverage      # runs locally under coverage.py and reports line/branch coverage",
         ],
     }),
@@ -410,6 +410,13 @@ _ROLE_RULES = [
         "summary": "Coverage orchestrator: spawns the test server under `coverage run`, runs the test suite, combines parallel-mode data, prints a report.",
         "customization_notes": [],
         "verification_notes": ["make dev-coverage", "make dev-coverage-html"],
+    }),
+    (re.compile(r"^test/run-local-tests\.py$"), {
+        "role": "test_local_runner",
+        "customization_relevance": "low",
+        "summary": "Local test orchestrator: starts the no-auth test server, waits for readiness, runs the plugin suite, and tears the server down.",
+        "customization_notes": [],
+        "verification_notes": ["make test"],
     }),
     (re.compile(r"^test/requirements\.txt$"), {
         "role": "test_requirements",
@@ -1759,6 +1766,7 @@ async def generate_server_scaffold_impl(
             # Coverage harness — runs the no-auth test server under
             # `coverage run` and combines parallel-mode data files.
             ("test/run-coverage.py.j2", "test/run-coverage.py"),
+            ("test/run-local-tests.py.j2", "test/run-local-tests.py"),
             (".coveragerc.j2", ".coveragerc"),
         ]
 
