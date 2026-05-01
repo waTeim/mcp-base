@@ -225,8 +225,27 @@ dev-test-debug: ## Run tests with debug logging against local no-auth server
 	@echo ""
 	@echo "Debug log saved to: /tmp/mcp-debug.log"
 
+.PHONY: check-kube-context
+check-kube-context: ## Verify kubectl has a usable current context
+	@command -v kubectl >/dev/null 2>&1 || { \
+		echo "error: kubectl not found on PATH"; \
+		exit 2; \
+	}
+	@kubectl config current-context >/dev/null 2>&1 || { \
+		echo "error: kubectl has no current context."; \
+		echo "Set KUBECONFIG or run 'kubectl config use-context <name>' before cluster tests."; \
+		echo "Without a context, kubectl falls back to localhost:8080, which is the Kubernetes API endpoint, not the MCP service."; \
+		exit 2; \
+	}
+	@kubectl cluster-info >/dev/null 2>&1 || { \
+		echo "error: kubectl cannot reach the current Kubernetes context."; \
+		echo "Check KUBECONFIG, credentials, VPN/network access, and cluster availability."; \
+		echo "A localhost:8080 refusal means kubectl is trying its default Kubernetes API endpoint."; \
+		exit 2; \
+	}
+
 .PHONY: test-cluster
-test-cluster: ## Run MCP tests against the in-cluster test sidecar (auto kubectl port-forward)
+test-cluster: check-kube-context ## Run MCP tests against the in-cluster test sidecar (auto kubectl port-forward)
 	@echo "Running MCP tests against in-cluster service $(HELM_SERVICE) in namespace $(HELM_NAMESPACE) on port $(MCP_TEST_PORT)..."
 	python test/test-mcp.py --no-auth --port-forward $(HELM_NAMESPACE)/$(HELM_SERVICE):$(MCP_TEST_PORT)
 
@@ -311,6 +330,7 @@ help: ## Show this help message
 	@echo "  dev-coverage         Run tests with coverage report"
 	@echo "  dev-coverage-html    Run tests and write coverage-html/index.html"
 	@echo "  test-cluster         Run tests against the in-cluster test sidecar"
+	@echo "  check-kube-context   Verify kubectl context before cluster tests"
 	@echo ""
 	@echo "Development:"
 	@echo "  dev-test-debug       Run tests with debug logging against a manual server"

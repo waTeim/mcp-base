@@ -97,6 +97,54 @@ def load_oidc_config_from_file(config_path: Optional[str] = None) -> Optional[Di
     return None
 
 
+def _normalize_scopes(value: Any) -> Optional[list]:
+    """Normalize scope config from YAML/env into a list of non-empty strings."""
+    if value is None:
+        return None
+    if isinstance(value, str):
+        raw_items = value.replace(",", " ").split()
+    elif isinstance(value, (list, tuple, set)):
+        raw_items = []
+        for item in value:
+            if item is None:
+                continue
+            raw_items.extend(str(item).replace(",", " ").split())
+    else:
+        raw_items = str(value).replace(",", " ").split()
+
+    scopes = []
+    for item in raw_items:
+        scope = item.strip()
+        if scope and scope not in scopes:
+            scopes.append(scope)
+    return scopes or None
+
+
+def _resolve_required_scopes(
+    config: Dict[str, Any],
+    default: Optional[list] = None,
+) -> Optional[list]:
+    """
+    Resolve required scopes from config/env.
+
+    Accepted forms, in priority order:
+    - required_scopes: ["scope-a", "scope-b"] or "scope-a scope-b"
+    - scope: "scope-a"
+    - OIDC_REQUIRED_SCOPES
+    - OIDC_SCOPE
+    """
+    for source in (
+        config.get("required_scopes"),
+        config.get("scope"),
+        os.getenv("OIDC_REQUIRED_SCOPES"),
+        os.getenv("OIDC_SCOPE"),
+    ):
+        scopes = _normalize_scopes(source)
+        if scopes:
+            return scopes
+    return list(default) if default else None
+
+
 # ============================================================================
 # Pattern A — Auth0 OAuth proxy
 # ============================================================================
@@ -246,6 +294,10 @@ def create_auth0_oauth_proxy(config_path: Optional[str] = None):
     client_secret = load_client_secret(config)
     jwt_signing_key = load_jwt_signing_key(config)
     client_storage = create_redis_client_storage(config)
+    required_scopes = _resolve_required_scopes(
+        config,
+        default=["openid", "offline_access"],
+    )
 
     issuer = issuer.rstrip('/')
     config_url = f"{issuer}/.well-known/openid-configuration"
@@ -256,6 +308,7 @@ def create_auth0_oauth_proxy(config_path: Optional[str] = None):
     logger.info(f"  Audience: {audience}")
     logger.info(f"  Client ID: {client_id}")
     logger.info(f"  Public URL: {public_url}")
+    logger.info(f"  Required scopes: {required_scopes}")
     logger.info(f"  Client Storage: {'Redis (persistent)' if client_storage else 'In-memory (not persistent)'}")
 
     provider_kwargs = {
@@ -265,7 +318,7 @@ def create_auth0_oauth_proxy(config_path: Optional[str] = None):
         "audience": audience,
         "base_url": public_url,
         "redirect_path": "/auth/callback",
-        "required_scopes": ["openid", "offline_access"],
+        "required_scopes": required_scopes,
         "require_authorization_consent": True,
         "jwt_signing_key": jwt_signing_key,
     }
@@ -322,7 +375,7 @@ def create_keycloak_auth_provider(config_path: Optional[str] = None):
     )
     public_url = config.get("public_url") or os.getenv("PUBLIC_URL")
     audience = config.get("audience") or os.getenv("OIDC_AUDIENCE")
-    required_scopes = config.get("required_scopes")
+    required_scopes = _resolve_required_scopes(config)
 
     if not realm_url:
         raise ValueError(
@@ -340,7 +393,7 @@ def create_keycloak_auth_provider(config_path: Optional[str] = None):
     logger.info(f"  Realm URL: {realm_url}")
     logger.info(f"  Public URL: {public_url}")
     logger.info(f"  Audience: {audience or '(not set)'}")
-    logger.info(f"  Required scopes: {required_scopes or '[openid]'}")
+    logger.info(f"  Required scopes: {required_scopes or '(provider default)'}")
 
     provider_kwargs: Dict[str, Any] = {
         "realm_url": realm_url,

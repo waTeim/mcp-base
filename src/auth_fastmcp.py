@@ -121,6 +121,54 @@ def load_oidc_config_from_file(config_path: Optional[str] = None) -> Optional[Di
     return None
 
 
+def _normalize_scopes(value: Any) -> Optional[list]:
+    """Normalize scope config from YAML/env into a list of non-empty strings."""
+    if value is None:
+        return None
+    if isinstance(value, str):
+        raw_items = value.replace(",", " ").split()
+    elif isinstance(value, (list, tuple, set)):
+        raw_items = []
+        for item in value:
+            if item is None:
+                continue
+            raw_items.extend(str(item).replace(",", " ").split())
+    else:
+        raw_items = str(value).replace(",", " ").split()
+
+    scopes = []
+    for item in raw_items:
+        scope = item.strip()
+        if scope and scope not in scopes:
+            scopes.append(scope)
+    return scopes or None
+
+
+def _resolve_required_scopes(
+    config: Dict[str, Any],
+    default: Optional[list] = None,
+) -> Optional[list]:
+    """
+    Resolve required scopes from config/env.
+
+    Accepted forms, in priority order:
+    - required_scopes: ["scope-a", "scope-b"] or "scope-a scope-b"
+    - scope: "scope-a"
+    - OIDC_REQUIRED_SCOPES
+    - OIDC_SCOPE
+    """
+    for source in (
+        config.get("required_scopes"),
+        config.get("scope"),
+        os.getenv("OIDC_REQUIRED_SCOPES"),
+        os.getenv("OIDC_SCOPE"),
+    ):
+        scopes = _normalize_scopes(source)
+        if scopes:
+            return scopes
+    return list(default) if default else None
+
+
 def load_client_secret(config: Dict[str, Any]) -> str:
     """
     Load client secret from file or config.
@@ -404,6 +452,10 @@ def create_auth0_oauth_proxy(config_path: Optional[str] = None) -> Auth0Provider
 
     # Create Redis client storage (optional but recommended for production)
     client_storage = create_redis_client_storage(config)
+    required_scopes = _resolve_required_scopes(
+        config,
+        default=["openid", "offline_access"],
+    )
 
     # Normalize issuer (remove trailing slash for consistency)
     issuer = issuer.rstrip('/')
@@ -417,6 +469,7 @@ def create_auth0_oauth_proxy(config_path: Optional[str] = None) -> Auth0Provider
     logger.info(f"  Audience: {audience}")
     logger.info(f"  Client ID: {client_id}")
     logger.info(f"  Public URL: {public_url}")
+    logger.info(f"  Required scopes: {required_scopes}")
     logger.info(f"  JWT Signing: {'Custom key' if 'JWT_SIGNING_KEY' in os.environ or config.get('jwt_signing_key') else 'Generated (single-replica only)'}")
     logger.info(f"  Client Storage: {'Redis (persistent)' if client_storage else 'In-memory (not persistent)'}")
 
@@ -428,7 +481,7 @@ def create_auth0_oauth_proxy(config_path: Optional[str] = None) -> Auth0Provider
         "audience": audience,
         "base_url": public_url,
         "redirect_path": "/auth/callback",
-        "required_scopes": ["openid", "offline_access"],  # offline_access enables refresh tokens
+        "required_scopes": required_scopes,
         "require_authorization_consent": True,
         "jwt_signing_key": jwt_signing_key,
     }
@@ -517,7 +570,7 @@ def create_keycloak_auth_provider(config_path: Optional[str] = None) -> Keycloak
 
     Optional config:
     - audience: Expected JWT audience
-    - required_scopes: Scopes required on incoming tokens (defaults to ["openid"])
+    - required_scopes/scope: Scopes required on incoming tokens
     """
     logger.info("=" * 70)
     logger.info("Initializing FastMCP Keycloak Auth Provider for MCP Base")
@@ -533,7 +586,7 @@ def create_keycloak_auth_provider(config_path: Optional[str] = None) -> Keycloak
     )
     public_url = config.get("public_url") or os.getenv("PUBLIC_URL")
     audience = config.get("audience") or os.getenv("OIDC_AUDIENCE")
-    required_scopes = config.get("required_scopes")
+    required_scopes = _resolve_required_scopes(config)
 
     if not realm_url:
         raise ValueError(
@@ -551,7 +604,7 @@ def create_keycloak_auth_provider(config_path: Optional[str] = None) -> Keycloak
     logger.info(f"  Realm URL: {realm_url}")
     logger.info(f"  Public URL: {public_url}")
     logger.info(f"  Audience: {audience or '(not set)'}")
-    logger.info(f"  Required scopes: {required_scopes or '[openid]'}")
+    logger.info(f"  Required scopes: {required_scopes or '(provider default)'}")
 
     provider_kwargs: Dict[str, Any] = {
         "realm_url": realm_url,
